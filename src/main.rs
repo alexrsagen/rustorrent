@@ -1,6 +1,4 @@
-use url::Url;
-
-use clap::{App, AppSettings, Arg};
+use structopt::StructOpt;
 
 pub mod bencode;
 pub mod bitfield;
@@ -13,161 +11,49 @@ pub mod tracker;
 use tracker::{TrackerHttpServer, TrackerServerOptions};
 
 pub mod peer;
-use peer::PortRange;
 
 pub mod error;
 use error::Error;
 
 use std::default::Default;
-use std::net::IpAddr;
-use std::path::PathBuf;
 
 pub mod client;
 use client::{Client, ClientOptions};
 
 pub const DEBUG: bool = true;
 
+pub mod cli;
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let matches = App::new("rustorrent")
-        .version("1.0.0")
-        .author("Alexander Sagen <alexander@sagen.me>")
-        .about("BitTorrent research client built in Rust")
-        .arg(
-            Arg::new("bind-address")
-                .short('b')
-                .takes_value(true)
-                .default_value("::")
-                .validator(validate_ipaddr)
-                .help("IP address to bind to"),
-        )
-        .arg(
-            Arg::new("bind-port")
-                .short('p')
-                .takes_value(true)
-                .default_value("1024-65535")
-                .validator(validate_portrange)
-                .help("Port (range) to bind to"),
-        )
-        .setting(AppSettings::SubcommandRequired)
-        .subcommand(
-            App::new("upload")
-                .alias("seed")
-                .about("Uploads/seeds a torrent")
-                .arg(
-                    Arg::new("torrent")
-                        .required(true)
-                        .takes_value(true)
-                        .validator(validate_path_or_url)
-                        .index(1)
-                        .help("Torrent file path"),
-                )
-                .arg(
-                    Arg::new("download-dir")
-                        .takes_value(true)
-                        .validator(validate_path)
-                        .default_value(".")
-                        .index(2)
-                        .help("Download directory"),
-                ),
-        )
-        .subcommand(
-            App::new("download")
-                .alias("leech")
-                .about("Downloads/leeches a torrent")
-                .arg(
-                    Arg::new("torrent")
-                        .required(true)
-                        .takes_value(true)
-                        .validator(validate_path_or_url)
-                        .index(1)
-                        .help("Torrent file path"),
-                )
-                .arg(
-                    Arg::new("download-dir")
-                        .takes_value(true)
-                        .validator(validate_path)
-                        .default_value(".")
-                        .index(2)
-                        .help("Download directory"),
-                )
-                .arg(
-                    Arg::new("tracker")
-                        .takes_value(true)
-                        .validator(validate_url)
-                        .help("Override tracker announce URL (optional)"),
-                ),
-        )
-        .subcommand(App::new("tracker").about("Starts a minimal torrent tracker"))
-        .get_matches();
+    let opt = cli::Opt::from_args();
 
-    let ip = matches
-        .value_of("bind-address")
-        .unwrap_or("::")
-        .parse::<IpAddr>()
-        .unwrap();
-    let port_range = matches
-        .value_of("bind-port")
-        .unwrap_or("1024-65535")
-        .parse::<PortRange>()
-        .unwrap();
-    let download_dir = matches
-        .value_of("download-dir")
-        .unwrap_or(".")
-        .parse::<PathBuf>()
-        .unwrap();
-
-    match matches.subcommand() {
-        Some(("download", sub_m)) => {
+    match opt.cmd {
+        cli::Command::Download {
+            torrent,
+            destination,
+            ..
+        } => {
             let client = Client::new(ClientOptions {
-                ip,
-                port_range,
-                download_dir,
+                ip: opt.bind_address,
+                port_range: opt.bind_port,
+                download_dir: destination,
                 ..Default::default()
             });
-            client.download(sub_m.value_of("torrent").unwrap()).await
+            client.download(&torrent).await?;
         }
-        Some(("upload", _sub_m)) => {
-            eprintln!("Not implemented yet");
-            Ok(())
+        cli::Command::Upload { .. } => {
+            todo!()
         }
-        Some(("tracker", _sub_m)) => {
-            TrackerHttpServer::new(TrackerServerOptions { ip, port_range })
-                .run()
-                .await
+        cli::Command::Tracker => {
+            TrackerHttpServer::new(TrackerServerOptions {
+                ip: opt.bind_address,
+                port_range: opt.bind_port,
+            })
+            .run()
+            .await?
         }
-        _ => Err(Error::InvalidCommand),
     }
-}
 
-fn validate_ipaddr(input: &'_ str) -> Result<(), String> {
-    match input.parse::<IpAddr>() {
-        Ok(_) => Ok(()),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-fn validate_portrange(input: &'_ str) -> Result<(), String> {
-    match input.parse::<PortRange>() {
-        Ok(_) => Ok(()),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-fn validate_path(input: &'_ str) -> Result<(), String> {
-    match input.parse::<PathBuf>() {
-        Ok(_) => Ok(()),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-fn validate_url(input: &'_ str) -> Result<(), String> {
-    match input.parse::<Url>() {
-        Ok(_) => Ok(()),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-fn validate_path_or_url(input: &'_ str) -> Result<(), String> {
-    validate_path(input).or_else(|_| validate_url(input))
+    Ok(())
 }

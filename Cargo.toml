@@ -11,7 +11,7 @@ nom = { version = "6.0.1", features = ["std"] }
 sha-1 = "0.10"
 url = "2.2.0"
 hex = "0.4.2"
-clap = "3"
+structopt = "0.3"
 rand = "0.8.0"
 bytes = "1.0.1"
 chrono = { version = "0.4.19", features = ["time"] }
