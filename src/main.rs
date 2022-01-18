@@ -1,6 +1,5 @@
 use url::Url;
 
-extern crate clap;
 use clap::{App, AppSettings, Arg, SubCommand};
 
 pub mod bencode;
