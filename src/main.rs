@@ -1,6 +1,6 @@
 use url::Url;
 
-use clap::{App, AppSettings, Arg, SubCommand};
+use clap::{App, AppSettings, Arg};
 
 pub mod bencode;
 pub mod bitfield;
@@ -34,16 +34,16 @@ async fn main() -> Result<(), Error> {
         .author("Alexander Sagen <alexander@sagen.me>")
         .about("BitTorrent research client built in Rust")
         .arg(
-            Arg::with_name("bind-address")
-                .short("b")
+            Arg::new("bind-address")
+                .short('b')
                 .takes_value(true)
                 .default_value("::")
                 .validator(validate_ipaddr)
                 .help("IP address to bind to"),
         )
         .arg(
-            Arg::with_name("bind-port")
-                .short("p")
+            Arg::new("bind-port")
+                .short('p')
                 .takes_value(true)
                 .default_value("1024-65535")
                 .validator(validate_portrange)
@@ -51,11 +51,11 @@ async fn main() -> Result<(), Error> {
         )
         .setting(AppSettings::SubcommandRequired)
         .subcommand(
-            SubCommand::with_name("upload")
+            App::new("upload")
                 .alias("seed")
                 .about("Uploads/seeds a torrent")
                 .arg(
-                    Arg::with_name("torrent")
+                    Arg::new("torrent")
                         .required(true)
                         .takes_value(true)
                         .validator(validate_path_or_url)
@@ -63,7 +63,7 @@ async fn main() -> Result<(), Error> {
                         .help("Torrent file path"),
                 )
                 .arg(
-                    Arg::with_name("download-dir")
+                    Arg::new("download-dir")
                         .takes_value(true)
                         .validator(validate_path)
                         .default_value(".")
@@ -72,11 +72,11 @@ async fn main() -> Result<(), Error> {
                 ),
         )
         .subcommand(
-            SubCommand::with_name("download")
+            App::new("download")
                 .alias("leech")
                 .about("Downloads/leeches a torrent")
                 .arg(
-                    Arg::with_name("torrent")
+                    Arg::new("torrent")
                         .required(true)
                         .takes_value(true)
                         .validator(validate_path_or_url)
@@ -84,7 +84,7 @@ async fn main() -> Result<(), Error> {
                         .help("Torrent file path"),
                 )
                 .arg(
-                    Arg::with_name("download-dir")
+                    Arg::new("download-dir")
                         .takes_value(true)
                         .validator(validate_path)
                         .default_value(".")
@@ -92,13 +92,13 @@ async fn main() -> Result<(), Error> {
                         .help("Download directory"),
                 )
                 .arg(
-                    Arg::with_name("tracker")
+                    Arg::new("tracker")
                         .takes_value(true)
                         .validator(validate_url)
                         .help("Override tracker announce URL (optional)"),
                 ),
         )
-        .subcommand(SubCommand::with_name("tracker").about("Starts a minimal torrent tracker"))
+        .subcommand(App::new("tracker").about("Starts a minimal torrent tracker"))
         .get_matches();
 
     let ip = matches
@@ -118,7 +118,7 @@ async fn main() -> Result<(), Error> {
         .unwrap();
 
     match matches.subcommand() {
-        ("download", Some(sub_m)) => {
+        Some(("download", sub_m)) => {
             let client = Client::new(ClientOptions {
                 ip,
                 port_range,
@@ -127,11 +127,11 @@ async fn main() -> Result<(), Error> {
             });
             client.download(sub_m.value_of("torrent").unwrap()).await
         }
-        ("upload", Some(sub_m)) => {
+        Some(("upload", sub_m)) => {
             eprintln!("Not implemented yet");
             Ok(())
         }
-        ("tracker", Some(sub_m)) => {
+        Some(("tracker", sub_m)) => {
             TrackerHttpServer::new(TrackerServerOptions { ip, port_range })
                 .run()
                 .await
@@ -140,34 +140,34 @@ async fn main() -> Result<(), Error> {
     }
 }
 
-fn validate_ipaddr(input: String) -> Result<(), String> {
+fn validate_ipaddr(input: &'_ str) -> Result<(), String> {
     match input.parse::<IpAddr>() {
         Ok(_) => Ok(()),
         Err(e) => Err(e.to_string()),
     }
 }
 
-fn validate_portrange(input: String) -> Result<(), String> {
+fn validate_portrange(input: &'_ str) -> Result<(), String> {
     match input.parse::<PortRange>() {
         Ok(_) => Ok(()),
         Err(e) => Err(e.to_string()),
     }
 }
 
-fn validate_path(input: String) -> Result<(), String> {
+fn validate_path(input: &'_ str) -> Result<(), String> {
     match input.parse::<PathBuf>() {
         Ok(_) => Ok(()),
         Err(e) => Err(e.to_string()),
     }
 }
 
-fn validate_url(input: String) -> Result<(), String> {
+fn validate_url(input: &'_ str) -> Result<(), String> {
     match input.parse::<Url>() {
         Ok(_) => Ok(()),
         Err(e) => Err(e.to_string()),
     }
 }
 
-fn validate_path_or_url(input: String) -> Result<(), String> {
-    validate_path(input.clone()).or(validate_url(input))
+fn validate_path_or_url(input: &'_ str) -> Result<(), String> {
+    validate_path(input).or_else(|_| validate_url(input))
 }

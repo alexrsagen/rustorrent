@@ -8,10 +8,10 @@ edition = "2021"
 
 [dependencies]
 nom = { version = "6.0.1", features = ["std"] }
-sha-1 = "0.9.2"
+sha-1 = "0.10"
 url = "2.2.0"
 hex = "0.4.2"
-clap = "2.33.3"
+clap = "3"
 rand = "0.8.0"
 bytes = "1.0.1"
 chrono = { version = "0.4.19", features = ["time"] }
