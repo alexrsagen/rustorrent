@@ -16,12 +16,12 @@ rand = "0.8.0"
 bytes = "1.0.1"
 chrono = { version = "0.4.19", features = ["time"] }
 hostname = "0.3.1"
-rustls = "0.19.0"
-webpki-roots = "0.21.0"
+rustls = "0.20.2"
+webpki-roots = "0.22.0"
 tokio = { version = "1.0.0", features = ["rt", "rt-multi-thread", "macros", "fs", "net"] }
 tokio-util = { version = "0.6.1", features = ["codec", "io", "net"] }
-hyper = { version = "0.14.1", features = ["client", "server", "tcp", "stream", "http1"] }
-hyper-rustls = { version = "0.22.1", features = ["webpki-tokio"] }
+hyper = { version = "0.14", features = ["client", "server", "tcp", "stream", "http1"] }
+hyper-rustls = { version = "0.23", features = ["webpki-tokio"] }
 trust-dns-resolver = { version = "0.20.3", features = ["dns-over-https-rustls"] }
 async-compression = { version = "0.3.7", default-features = false, features = ["tokio", "gzip"] }
 futures = "0.3"
