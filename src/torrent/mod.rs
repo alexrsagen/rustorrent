@@ -28,21 +28,11 @@ pub enum TorrentStatus {
 	Finished,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, Default, PartialEq, Eq, Clone)]
 pub struct TorrentAnnounceState {
 	pub last_time: Option<DateTime<Utc>>,
 	pub last_announce: Option<Announce>,
 }
-
-impl Default for TorrentAnnounceState {
-	fn default() -> Self {
-		Self {
-			last_time: None,
-			last_announce: None,
-		}
-	}
-}
-
 #[derive(Debug)]
 pub struct Torrent {
 	pub uploaded: AtomicUsize,
@@ -63,7 +53,7 @@ impl Torrent {
 		// prepare announce list
 		let mut announce = metainfo.announce.clone();
 		announce.shuffle(&mut rand::thread_rng());
-		let announce = Arc::new(announce.into_iter().map(|tier| Mutex::new(tier)).collect());
+		let announce = Arc::new(announce.into_iter().map(Mutex::new).collect());
 
 		// prepare handshake
 		let handshake = Handshake::new(&metainfo.info_hash, local_peer.id.as_ref().unwrap());
@@ -121,8 +111,7 @@ impl Torrent {
 
 	pub async fn has_peer(&self, info: &PeerInfo) -> bool {
 		self.peers.read().await.iter()
-			.find(|peer| &peer.info == info)
-			.is_some()
+			.any(|peer| &peer.info == info)
 	}
 
 	pub async fn append_peers(&self, peers: Vec<Peer>) {

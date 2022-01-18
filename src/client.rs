@@ -35,7 +35,7 @@ fn print_metainfo_files(metainfo: &Metainfo) {
 			println!("- {}", file);
 		},
 	};
-	println!("");
+	println!(" ");
 }
 
 async fn print_peers(peers: &Peers) {
@@ -43,7 +43,7 @@ async fn print_peers(peers: &Peers) {
 	for peer in peers.read().await.iter() {
 		println!("- {}", &peer.info);
 	}
-	println!("");
+	println!(" ");
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]

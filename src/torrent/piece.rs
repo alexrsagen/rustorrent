@@ -79,6 +79,7 @@ pub enum PickMode {
 
 #[derive(Debug, Clone)]
 pub struct PieceBlockRequest {
+	#[allow(unused)]
 	picked_at: DateTime<Utc>,
 	request: Request,
 	peer: Arc<Peer>,
@@ -147,7 +148,7 @@ impl PieceStore {
 				}
 			})
 			.collect().await;
-		if piece_priority.len() == 0 {
+		if piece_priority.is_empty() {
 			return;
 		}
 		piece_priority.sort_by(|&(_, a), &(_, b)| a.cmp(&b));
@@ -158,7 +159,7 @@ impl PieceStore {
 		let mut cur_priority = 0;
 		let mut cur_group: Vec<usize> = Vec::new();
 		for (piece_index, priority) in piece_priority {
-			if priority != cur_priority && cur_group.len() > 0 {
+			if priority != cur_priority && !cur_group.is_empty() {
 				cur_group.shuffle(&mut rng);
 				pieces_by_priority.push(cur_group);
 				cur_group = Vec::new();
@@ -166,7 +167,7 @@ impl PieceStore {
 			cur_priority = priority;
 			cur_group.push(piece_index);
 		}
-		if cur_group.len() > 0 {
+		if !cur_group.is_empty() {
 			cur_group.shuffle(&mut rng);
 			pieces_by_priority.push(cur_group);
 		}
@@ -258,7 +259,7 @@ impl PieceStore {
 					.filter(|&(_, block)| *block == PieceBlockState::Open)
 					.map(|(i, _)| i)
 					.collect();
-				if open_blocks.len() == 0 { continue; }
+				if open_blocks.is_empty() { continue; }
 
 				// get a random open block
 				let block_index = rand::thread_rng().gen_range(0..open_blocks.len());
@@ -267,6 +268,7 @@ impl PieceStore {
 
 				// since we have decided on a piece/block,
 				// we no longer need a reference to the peer bitfield
+				// todo: dropping ref does nothing, we should not drop things manually.
 				std::mem::drop(peer_bitfield);
 				std::mem::drop(peer_bitfield_guard);
 
@@ -301,6 +303,13 @@ pub struct PieceData {
 	location: PieceLocation,
 	buffer: Option<Vec<u8>>,
 }
+
+impl Default for PieceData {
+    fn default() -> Self {
+        Self { location: PieceLocation::Memory, buffer: Default::default() }
+    }
+}
+
 
 impl PieceData {
 	// TODO: add from_disk method, pointing to a target directory

@@ -184,7 +184,7 @@ impl PeerConn {
 	pub fn duration_since_last_rx(&self) -> Duration {
 		if let Some(last_rx) = self.last_rx {
 			let now = Utc::now();
-			(now - last_rx).to_std().unwrap_or(Duration::new(0, 0))
+			(now - last_rx).to_std().unwrap_or_default()
 		} else {
 			Duration::new(0, 0)
 		}
@@ -193,7 +193,7 @@ impl PeerConn {
 	pub fn duration_since_last_tx(&self) -> Duration {
 		if let Some(last_tx) = self.last_tx {
 			let now = Utc::now();
-			(now - last_tx).to_std().unwrap_or(Duration::new(0, 0))
+			(now - last_tx).to_std().unwrap_or_default()
 		} else {
 			Duration::new(0, 0)
 		}

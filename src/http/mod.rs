@@ -17,21 +17,21 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-const EXTERNAL_IP_ENDPOINTS: [&'static str; 4] = [
+const EXTERNAL_IP_ENDPOINTS: [&str; 4] = [
     "https://ip.kitcloud.no",
     "https://icanhazip.com",
     "https://api64.ipify.org",
     "https://ident.me",
 ];
 
-const EXTERNAL_IPV4_ENDPOINTS: [&'static str; 4] = [
+const EXTERNAL_IPV4_ENDPOINTS: [&str; 4] = [
     "https://ipv4.kitcloud.no/raw",
     "https://ipv4.icanhazip.com",
     "https://api.ipify.org",
     "http://ipv4.ident.me",
 ];
 
-const EXTERNAL_IPV6_ENDPOINTS: [&'static str; 4] = [
+const EXTERNAL_IPV6_ENDPOINTS: [&str; 4] = [
     "https://ipv6.kitcloud.no/raw",
     "https://ipv6.icanhazip.com",
     "https://api6.ipify.org",
@@ -110,7 +110,7 @@ impl DualSchemeClient {
             }
         }
         Err(Error::PublicIpLookupFailed(match last_error {
-            Some(e) => String::from(format!("no endpoints available (last error: {})", e)),
+            Some(e) => format!("no endpoints available (last error: {})", e),
             None => String::from("no endpoints available"),
         }))
     }
@@ -130,7 +130,7 @@ impl DualSchemeClient {
             }
         }
         Err(Error::PublicIpLookupFailed(match last_error {
-            Some(e) => String::from(format!("no endpoints available (last error: {})", e)),
+            Some(e) => format!("no endpoints available (last error: {})", e),
             None => String::from("no endpoints available"),
         }))
     }
@@ -150,7 +150,7 @@ impl DualSchemeClient {
             }
         }
         Err(Error::PublicIpLookupFailed(match last_error {
-            Some(e) => String::from(format!("no endpoints available (last error: {})", e)),
+            Some(e) => format!("no endpoints available (last error: {})", e),
             None => String::from("no endpoints available"),
         }))
     }

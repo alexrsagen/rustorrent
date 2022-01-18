@@ -18,8 +18,8 @@ impl Handshake {
 		Self {
 			pstr: String::from(PSTR),
 			reserved: Bitfield::new(8 * 8),
-			info_hash: info_hash.clone(),
-			peer_id: peer_id.clone(),
+			info_hash: *info_hash,
+			peer_id: *peer_id,
 		}
 	}
 }
@@ -59,8 +59,7 @@ impl TryFrom<Vec<u8>> for Handshake {
 
 impl From<&Handshake> for Vec<u8> {
 	fn from(value: &Handshake) -> Self {
-		let mut msg = Vec::new();
-		msg.push(value.pstr.len() as u8);
+		let mut msg = Vec::from([value.pstr.len() as u8]);
 		msg.extend(value.pstr.as_bytes().iter());
 		msg.extend(value.reserved.as_bytes().iter());
 		msg.extend(value.info_hash.iter());
@@ -147,7 +146,7 @@ impl Message {
 
 impl From<&[u8]> for Message {
 	fn from(bytes: &[u8]) -> Self {
-		if bytes.len() == 0 {
+		if bytes.is_empty() {
 			// no message ID means keepalive
 			return Self::Keepalive;
 		}

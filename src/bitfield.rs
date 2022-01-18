@@ -68,6 +68,10 @@ impl Bitfield {
 		self.bits
 	}
 
+	pub fn is_empty(&self) -> bool {
+		self.bits == 0
+	}
+
 	pub fn resize(&mut self, bits: usize) -> &mut Self {
 		let len = bits_to_bytes(bits);
 		self.data.resize(len, 0);

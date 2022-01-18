@@ -16,7 +16,7 @@ impl FromStr for PortRange {
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
 		let parts: Vec<&str> = s.splitn(2, '-').collect();
-		if parts.len() == 0 {
+		if parts.is_empty() {
 			return Err(Error::NoData);
 		}
 

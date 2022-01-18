@@ -452,7 +452,7 @@ impl UdpConn {
 
 	pub async fn perform_req(&mut self, req: &Request) -> Result<Response, Error> {
 		// send request and recv connect response
-		self.write_req(&req).await?;
+		self.write_req(req).await?;
 		let res = self.read_res().await?;
 
 		// check for error

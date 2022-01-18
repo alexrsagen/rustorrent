@@ -37,6 +37,7 @@ async fn handle(
 
 #[derive(Debug, Clone)]
 pub struct TrackerHttpServer {
+	#[allow(unused)]
 	opts: TrackerServerOptions,
 	addr: SocketAddr,
 }
@@ -65,7 +66,7 @@ impl TrackerHttpServer {
 		Server::bind(&self.addr)
 			.serve(make_service)
 			.await
-			.map_err(|e| Error::Hyper(e))
+			.map_err(Error::Hyper)
 	}
 
 	async fn handle(&self, _addr: SocketAddr, req: Request<Body>) -> Result<Response<Body>, Infallible> {

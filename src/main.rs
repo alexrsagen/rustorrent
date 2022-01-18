@@ -127,11 +127,11 @@ async fn main() -> Result<(), Error> {
             });
             client.download(sub_m.value_of("torrent").unwrap()).await
         }
-        Some(("upload", sub_m)) => {
+        Some(("upload", _sub_m)) => {
             eprintln!("Not implemented yet");
             Ok(())
         }
-        Some(("tracker", sub_m)) => {
+        Some(("tracker", _sub_m)) => {
             TrackerHttpServer::new(TrackerServerOptions { ip, port_range })
                 .run()
                 .await

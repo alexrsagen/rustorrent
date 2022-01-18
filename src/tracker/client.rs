@@ -102,7 +102,7 @@ impl<'a> TrackerClient<'a> {
 						.map(|ip| SocketAddr::new(ip, port))
 						.collect::<Vec<SocketAddr>>();
 					// range check
-					if addrs.len() == 0 {
+					if addrs.is_empty() {
 						return Err(Error::NotConnected);
 					}
 					// get random address from lookup result
@@ -187,7 +187,7 @@ impl<'a> TrackerClient<'a> {
 			}
 		}
 		Err(Error::AnnounceFailed(match last_error {
-			Some(e) => String::from(format!("no trackers available (last error: {})", e)),
+			Some(e) => format!("no trackers available (last error: {})", e),
 			None => String::from("no trackers available"),
 		}))
 	}

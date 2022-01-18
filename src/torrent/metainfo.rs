@@ -200,15 +200,15 @@ impl TryFrom<bencode::Dict> for Metainfo {
 							}
 						}
 						String::new()
-					}).filter(|s| s.len() > 0).collect();
+					}).filter(|s| !s.is_empty()).collect();
 				}
 				vec![]
-			}).filter(|s| s.len() > 0).collect();
-			if tier_list.len() > 0 {
+			}).filter(|s| !s.is_empty()).collect();
+			if !tier_list.is_empty() {
 				announce = tier_list;
 			}
 		}
-		if announce.len() == 0 {
+		if announce.is_empty() {
 			if let Some(bencode::Value::Bytes(announce_v)) = dict.remove("announce") {
 				announce = vec![vec![String::from_utf8(announce_v)?]];
 			} else {

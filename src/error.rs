@@ -54,7 +54,7 @@ pub enum Error {
 	UrlInvalid(url::ParseError),
 	UriInvalid(hyper::http::uri::InvalidUri),
 	ProtoInvalid(InvalidProto),
-	ResolveError(trust_dns_resolver::error::ResolveError),
+	ResolveError(Box<trust_dns_resolver::error::ResolveError>),
 	JoinError(tokio::task::JoinError),
 	Timeout(tokio::time::error::Elapsed),
 	PeerIdInvalid,
@@ -118,7 +118,7 @@ impl From<std::string::FromUtf8Error> for Error { fn from(e: std::string::FromUt
 impl From<std::net::AddrParseError> for Error { fn from(e: std::net::AddrParseError) -> Self { Self::IpInvalid(e) } }
 impl From<url::ParseError> for Error { fn from(e: url::ParseError) -> Self { Self::UrlInvalid(e) } }
 impl From<hyper::http::uri::InvalidUri> for Error { fn from(e: hyper::http::uri::InvalidUri) -> Self { Self::UriInvalid(e) } }
-impl From<trust_dns_resolver::error::ResolveError> for Error { fn from(e: trust_dns_resolver::error::ResolveError) -> Self { Self::ResolveError(e) } }
+impl From<trust_dns_resolver::error::ResolveError> for Error { fn from(e: trust_dns_resolver::error::ResolveError) -> Self { Self::ResolveError(e.into()) } }
 impl From<tokio::time::error::Elapsed> for Error { fn from(e: tokio::time::error::Elapsed) -> Self { Self::Timeout(e) } }
 impl From<hyper::header::ToStrError> for Error { fn from(e: hyper::header::ToStrError) -> Self { Self::ToStrError(e) } }
 impl From<tokio::task::JoinError> for Error { fn from(e: tokio::task::JoinError) -> Self { Self::JoinError(e) } }
