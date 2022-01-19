@@ -10,7 +10,7 @@ use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::ops::RangeInclusive;
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub struct PeerInfo {
     pub id: Option<[u8; 20]>,
     pub addr: SocketAddr,

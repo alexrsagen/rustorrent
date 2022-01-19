@@ -95,6 +95,12 @@ impl From<&Value> for Vec<u8> {
     }
 }
 
+impl From<Value> for Vec<u8> {
+    fn from(value: Value) -> Self {
+        (&value).into()
+    }
+}
+
 fn to_number<T: FromStr<Err = std::num::ParseIntError>>(input: &[u8]) -> std::io::Result<T> {
     let input_str = String::from_utf8_lossy(input);
     let input_num = input_str
