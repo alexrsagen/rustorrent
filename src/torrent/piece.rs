@@ -335,8 +335,6 @@ impl Default for PieceData {
 }
 
 impl PieceData {
-    // TODO: add from_disk method, pointing to a target directory
-
     pub fn new() -> Self {
         Self {
             location: PieceLocation::Memory,
