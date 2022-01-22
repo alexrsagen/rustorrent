@@ -1,6 +1,8 @@
 pub mod resolver;
 use resolver::AsyncHyperResolver;
 
+pub mod query_string;
+
 use crate::error::{Error, HttpProto, InvalidProto};
 
 use async_compression::tokio::bufread::GzipDecoder;
@@ -156,6 +158,9 @@ impl DualSchemeClient {
     }
 
     pub async fn get(&self, uri: &Uri) -> Result<Response<Body>, Error> {
+        if crate::DEBUG {
+            println!("[debug] announce endpoint (hyper): {}", uri);
+        }
         let req = Request::builder()
             .method("GET")
             .uri(uri)

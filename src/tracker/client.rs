@@ -1,5 +1,4 @@
 use crate::tracker::announce::{Announce, AnnounceResponse};
-
 use crate::tracker::udp_conn::{RequestData, ResponseData, UdpConn, EVENT_NONE};
 
 use crate::error::{Error, InvalidProto, TrackerProto};
@@ -8,14 +7,16 @@ use crate::peer::PeerInfo;
 use crate::torrent::Torrent;
 
 use hyper::Uri;
+use hyper::http::uri::PathAndQuery;
 use rand::Rng;
 use trust_dns_resolver::TokioAsyncResolver;
-use url::Url;
 
 use std::convert::TryInto;
 use std::default::Default;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::Ordering;
+
+use super::announce::AnnounceRequest;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct TrackerClientOptions {
@@ -61,47 +62,55 @@ impl<'a> TrackerClient<'a> {
         Self::new(client, resolver, opts, peer_self)
     }
 
-    fn build_announce_uri(
-        &self,
-        mut endpoint: Url,
-        torrent: &Torrent,
-        tracker_id: Option<&str>,
-    ) -> Result<Uri, Error> {
+    fn build_announce_request(&self, torrent: &Torrent, tracker_id: Option<&[u8]>) -> AnnounceRequest {
         let uploaded = torrent.uploaded.load(Ordering::SeqCst);
         let downloaded = torrent.downloaded.load(Ordering::SeqCst);
-        endpoint
-            .query_pairs_mut()
-            .clear()
-            .append_pair("info_hash", &*unsafe {
-                String::from_utf8_unchecked(torrent.metainfo.info_hash.to_vec())
-            })
-            .append_pair("peer_id", &*unsafe {
-                String::from_utf8_unchecked(self.peer_self.id.as_ref().unwrap().to_vec())
-            })
-            .append_pair("port", &self.peer_self.addr.port().to_string())
-            .append_pair("uploaded", &uploaded.to_string())
-            .append_pair("downloaded", &downloaded.to_string())
-            .append_pair("compact", "1")
-            .append_pair("numwant", &self.opts.num_want.to_string())
-            .append_pair(
-                "left",
-                &(torrent.metainfo.info.total_size() - downloaded).to_string(),
-            );
-        if let Some(tracker_id) = tracker_id {
-            endpoint
-                .query_pairs_mut()
-                .append_pair("trackerid", tracker_id);
+
+        AnnounceRequest {
+            info_hash: Some(torrent.metainfo.info_hash),
+            peer_id: self.peer_self.id,
+            port: Some(self.peer_self.addr.port()),
+            uploaded: Some(uploaded),
+            downloaded: Some(downloaded),
+            left: Some(torrent.metainfo.info.total_size() - downloaded),
+            compact: true,
+            no_peer_id: false,
+            event: None,
+            ip: None,
+            num_want: Some(self.opts.num_want),
+            key: None,
+            tracker_id: tracker_id.map(Vec::from),
         }
-        Ok(endpoint.to_string().try_into()?)
+    }
+
+    fn build_announce_uri(
+        &self,
+        base_uri: Uri,
+        torrent: &Torrent,
+        tracker_id: Option<&[u8]>,
+    ) -> Result<Uri, Error> {
+        let query_string = self.build_announce_request(torrent, tracker_id).to_string();
+        if base_uri.scheme().is_none() || base_uri.authority().is_none() {
+            return Err(Error::NotConnected);
+        }
+        let mut path_and_query = base_uri.path().to_string();
+        path_and_query.push_str("?");
+        path_and_query.push_str(&query_string);
+        Uri::builder()
+            .scheme(base_uri.scheme().unwrap().clone())
+            .authority(base_uri.authority().unwrap().clone())
+            .path_and_query(PathAndQuery::try_from(path_and_query)?)
+            .build()
+            .map_err(Error::from)
     }
 
     async fn try_announce_http(
         &self,
-        endpoint: Url,
+        base_uri: Uri,
         torrent: &Torrent,
-        tracker_id: Option<&str>,
+        tracker_id: Option<&[u8]>,
     ) -> Result<Announce, Error> {
-        let announce_uri = self.build_announce_uri(endpoint, torrent, tracker_id)?;
+        let announce_uri = self.build_announce_uri(base_uri, torrent, tracker_id)?;
         let mut res = self.client.get(&announce_uri).await?;
         if crate::DEBUG {
             println!("[debug] HTTP GET {}: {}", &announce_uri, res.status());
@@ -113,41 +122,37 @@ impl<'a> TrackerClient<'a> {
         }
     }
 
-    async fn try_announce_udp(&self, endpoint: Url, torrent: &Torrent) -> Result<Announce, Error> {
+    async fn try_announce_udp(&self, endpoint: Uri, torrent: &Torrent) -> Result<Announce, Error> {
         // check scheme
-        if endpoint.scheme() != "udp" {
+        if endpoint.scheme().map(|scheme| scheme.as_str()) != Some("udp") {
             return Err(Error::ProtoInvalid(InvalidProto::Tracker(
-                TrackerProto::Other(endpoint.scheme().to_owned()),
+                TrackerProto::Other(endpoint.scheme().map(|scheme| scheme.as_str().to_string()).unwrap_or_default()),
             )));
         }
         // get port
         let port = match endpoint.port() {
-            Some(port) => port,
+            Some(port) => port.as_u16(),
             None => {
                 return Err(Error::NotConnected);
             }
         };
         // resolve hostname
         let addr = match endpoint.host() {
-            Some(host) => match host {
-                url::Host::Domain(hostname) => {
-                    // resolve hostname to addresses
-                    let addrs = self
-                        .resolver
-                        .lookup_ip(hostname)
-                        .await?
-                        .iter()
-                        .map(|ip| SocketAddr::new(ip, port))
-                        .collect::<Vec<SocketAddr>>();
-                    // range check
-                    if addrs.is_empty() {
-                        return Err(Error::NotConnected);
-                    }
-                    // get random address from lookup result
-                    addrs[(&mut rand::thread_rng()).gen_range(0..addrs.len() - 1)]
+            Some(host) => {
+                // resolve hostname to addresses
+                let addrs = self
+                    .resolver
+                    .lookup_ip(host)
+                    .await?
+                    .iter()
+                    .map(|ip| SocketAddr::new(ip, port))
+                    .collect::<Vec<SocketAddr>>();
+                // range check
+                if addrs.is_empty() {
+                    return Err(Error::NotConnected);
                 }
-                url::Host::Ipv4(ip) => SocketAddr::new(IpAddr::V4(ip), port),
-                url::Host::Ipv6(ip) => SocketAddr::new(IpAddr::V6(ip), port),
+                // get random address from lookup result
+                addrs[(&mut rand::thread_rng()).gen_range(0..addrs.len() - 1)]
             },
             None => {
                 return Err(Error::NotConnected);
@@ -184,14 +189,14 @@ impl<'a> TrackerClient<'a> {
         &self,
         endpoint: &str,
         torrent: &Torrent,
-        tracker_id: Option<&str>,
+        tracker_id: Option<&[u8]>,
     ) -> Result<Announce, Error> {
-        let endpoint = Url::parse(endpoint)?;
-        match endpoint.scheme() {
-            "http" | "https" => self.try_announce_http(endpoint, torrent, tracker_id).await,
-            "udp" => self.try_announce_udp(endpoint, torrent).await,
+        let endpoint = Uri::try_from(endpoint)?;
+        match endpoint.scheme().map(|scheme| scheme.as_str()) {
+            Some("http") | Some("https") => self.try_announce_http(endpoint, torrent, tracker_id).await,
+            Some("udp") => self.try_announce_udp(endpoint, torrent).await,
             scheme => Err(Error::ProtoInvalid(InvalidProto::Tracker(
-                TrackerProto::Other(scheme.to_owned()),
+                TrackerProto::Other(scheme.map(str::to_string).unwrap_or_default()),
             ))),
         }
     }
@@ -199,7 +204,7 @@ impl<'a> TrackerClient<'a> {
     pub async fn announce(
         &self,
         torrent: &Torrent,
-        tracker_id: Option<&str>,
+        tracker_id: Option<&[u8]>,
     ) -> Result<Announce, Error> {
         let mut last_error: Option<Error> = None;
         for tier_guard in torrent.announce.iter() {

@@ -1,11 +1,22 @@
 use crate::bencode;
 use crate::error::Error;
 use crate::peer::PeerInfo;
+use crate::http::query_string::{Parse, decode, write_pair};
 
-use std::net::IpAddr;
+use std::{net::IpAddr, convert::Infallible};
 use std::str::FromStr;
-use std::convert::{TryFrom, TryInto, AsRef};
+use std::convert::{TryFrom, TryInto};
 use std::time::Duration;
+
+fn boolish(s: &str) -> bool {
+    match s {
+        "1" => true,
+        "on" => true,
+        "yes" => true,
+        "true" => true,
+        _ => false,
+    }
+}
 
 #[derive(Debug, Default, PartialEq, Eq, Clone)]
 pub struct AnnounceRequest {
@@ -33,75 +44,113 @@ pub struct AnnounceRequest {
     /// Optional. The true IP address of the client machine, in dotted quad format or rfc3513 defined hexed IPv6 address. Notes: In general this parameter is not necessary as the address of the client can be determined from the IP address from which the HTTP request came. The parameter is only needed in the case where the IP address that the request came in on is not the IP address of the client. This happens if the client is communicating to the tracker through a proxy (or a transparent web proxy/cache.) It also is necessary when both the client and the tracker are on the same local side of a NAT gateway. The reason for this is that otherwise the tracker would give out the internal (RFC1918) address of the client, which is not routable. Therefore the client must explicitly state its (external, routable) IP address to be given out to external peers. Various trackers treat this parameter differently. Some only honor it only if the IP address that the request came in on is in RFC1918 space. Others honor it unconditionally, while others ignore it completely. In case of IPv6 address (e.g.: 2001:db8:1:2::100) it indicates only that client can communicate via IPv6.
     pub ip: Option<IpAddr>,
     /// Optional. Number of peers that the client would like to receive from the tracker. This value is permitted to be zero. If omitted, typically defaults to 50 peers.
-    pub num_want: Option<usize>,
+    pub num_want: Option<i32>,
     /// Optional. An additional identification that is not shared with any other peers. It is intended to allow a client to prove their identity should their IP address change.
-    pub key: Option<String>,
+    pub key: Option<Vec<u8>>,
     /// Optional. If a previous announce contained a tracker id, it should be set here.
-    pub tracker_id: Option<String>,
+    pub tracker_id: Option<Vec<u8>>,
 }
 
-fn boolish(s: &str) -> bool {
-    match s {
-        "1" => true,
-        "on" => true,
-        "yes" => true,
-        "true" => true,
-        _ => false,
+impl ToString for AnnounceRequest {
+    fn to_string(&self) -> String {
+        let mut query = String::new();
+        if let Some(v) = &self.info_hash {
+            write_pair(&mut query, "info_hash".as_bytes(), v.as_ref());
+        }
+        if let Some(v) = &self.peer_id {
+            write_pair(&mut query, "peer_id".as_bytes(), v.as_ref());
+        }
+        if let Some(v) = &self.port {
+            write_pair(&mut query, "port".as_bytes(), v.to_string().as_bytes());
+        }
+        if let Some(v) = &self.uploaded {
+            write_pair(&mut query, "uploaded".as_bytes(), v.to_string().as_bytes());
+        }
+        if let Some(v) = &self.downloaded {
+            write_pair(&mut query, "downloaded".as_bytes(), v.to_string().as_bytes());
+        }
+        if let Some(v) = &self.left {
+            write_pair(&mut query, "left".as_bytes(), v.to_string().as_bytes());
+        }
+        if self.compact {
+            write_pair(&mut query, "compact".as_bytes(), "1".as_bytes());
+        }
+        if self.no_peer_id {
+            write_pair(&mut query, "no_peer_id".as_bytes(), "1".as_bytes());
+        }
+        if let Some(v) = &self.event {
+            write_pair(&mut query, "event".as_bytes(), v.as_bytes());
+        }
+        if let Some(v) = &self.ip {
+            write_pair(&mut query, "ip".as_bytes(), v.to_string().as_bytes());
+        }
+        if let Some(v) = &self.num_want {
+            write_pair(&mut query, "numwant".as_bytes(), v.to_string().as_bytes());
+        }
+        if let Some(v) = &self.key {
+            write_pair(&mut query, "key".as_bytes(), v.as_ref());
+        }
+        if let Some(v) = &self.tracker_id {
+            write_pair(&mut query, "trackerid".as_bytes(), v.as_ref());
+        }
+        query
     }
 }
 
-impl From<&mut url::form_urlencoded::Parse<'_>> for AnnounceRequest {
-    fn from(input: &mut url::form_urlencoded::Parse<'_>) -> AnnounceRequest {
+impl From<&mut Parse<'_>> for AnnounceRequest {
+    fn from(input: &mut Parse<'_>) -> AnnounceRequest {
         let mut output = AnnounceRequest { ..Default::default() };
         for (k, v) in input {
-            match k.as_ref() {
+            match k.decode_utf8_lossy().as_ref() {
                 "info_hash" => {
-                    if v.as_bytes().len() == 20 {
-                        output.info_hash = v.as_bytes().try_into().ok();
+                    let bytes: Vec<u8> = v.collect();
+                    if bytes.len() == 20 {
+                        output.info_hash = bytes.try_into().ok();
                     }
                 },
                 "peer_id" => {
-                    if v.as_bytes().len() == 20 {
-                        output.peer_id = v.as_bytes().try_into().ok();
+                    let bytes: Vec<u8> = v.collect();
+                    if bytes.len() == 20 {
+                        output.peer_id = bytes.try_into().ok();
                     }
                 },
                 "port" => {
-                    output.port = u16::from_str(v.as_ref()).ok();
+                    output.port = u16::from_str(v.decode_utf8_lossy().as_ref()).ok();
                 },
                 "uploaded" => {
-                    output.uploaded = usize::from_str(v.as_ref()).ok();
+                    output.uploaded = usize::from_str(v.decode_utf8_lossy().as_ref()).ok();
                 },
                 "downloaded" => {
-                    output.downloaded = usize::from_str(v.as_ref()).ok();
+                    output.downloaded = usize::from_str(v.decode_utf8_lossy().as_ref()).ok();
                 },
                 "left" => {
-                    output.left = usize::from_str(v.as_ref()).ok();
+                    output.left = usize::from_str(v.decode_utf8_lossy().as_ref()).ok();
                 },
                 "compact" => {
-                    output.compact = boolish(v.as_ref());
+                    output.compact = boolish(v.decode_utf8_lossy().as_ref());
                 },
                 "no_peer_id" => {
-                    output.no_peer_id = boolish(v.as_ref());
+                    output.no_peer_id = boolish(v.decode_utf8_lossy().as_ref());
                 },
                 "event" => {
-                    if !v.as_ref().is_empty() {
-                        output.event = Some(v.to_string());
-                    }
+                    output.event = v.decode_utf8().as_deref().ok().map(str::to_string);
                 },
                 "ip" => {
-                    output.ip = IpAddr::from_str(v.as_ref()).ok();
+                    output.ip = IpAddr::from_str(v.decode_utf8_lossy().as_ref()).ok();
                 },
                 "numwant" => {
-                    output.num_want = usize::from_str(v.as_ref()).ok();
+                    output.num_want = i32::from_str(v.decode_utf8_lossy().as_ref()).ok();
                 },
                 "key" => {
-                    if !v.as_ref().is_empty() {
-                        output.key = Some(v.to_string());
+                    let bytes: Vec<u8> = v.collect();
+                    if !bytes.is_empty() {
+                        output.key = Some(bytes);
                     }
                 },
                 "trackerid" => {
-                    if !v.as_ref().is_empty() {
-                        output.tracker_id = Some(v.to_string());
+                    let bytes: Vec<u8> = v.collect();
+                    if !bytes.is_empty() {
+                        output.tracker_id = Some(bytes);
                     }
                 },
                 _ => {},
@@ -111,12 +160,20 @@ impl From<&mut url::form_urlencoded::Parse<'_>> for AnnounceRequest {
     }
 }
 
+impl FromStr for AnnounceRequest {
+    type Err = Infallible;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut query_iter = decode(s.as_bytes());
+        Ok((&mut query_iter).into())
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Announce {
     pub warning_message: Option<String>,
     pub interval: Duration,
     pub min_interval: Option<Duration>,
-    pub tracker_id: Option<String>,
+    pub tracker_id: Option<Vec<u8>>,
     pub complete: i64,   // seeders
     pub incomplete: i64, // leechers
     pub peers: Vec<PeerInfo>,
@@ -128,7 +185,7 @@ impl TryFrom<bencode::Dict> for Announce {
         let mut warning_message: Option<String> = None;
         let interval: Duration;
         let mut min_interval: Option<Duration> = None;
-        let mut tracker_id: Option<String> = None;
+        let mut tracker_id: Option<Vec<u8>> = None;
         let complete: i64;
         let incomplete: i64;
         let peers: Vec<PeerInfo>;
@@ -147,9 +204,7 @@ impl TryFrom<bencode::Dict> for Announce {
             min_interval = Some(Duration::from_secs(min_interval_v as u64));
         }
         if let Some(bencode::Value::Bytes(tracker_id_v)) = dict.remove("tracker id") {
-            if let Ok(tracker_id_str) = String::from_utf8(tracker_id_v) {
-                tracker_id = Some(tracker_id_str);
-            }
+            tracker_id = Some(tracker_id_v);
         }
         if let Some(bencode::Value::Int(complete_v)) = dict.remove("complete") {
             complete = complete_v;
@@ -252,7 +307,7 @@ impl From<&AnnounceResponse> for bencode::Dict {
                 if let Some(tracker_id) = &announce.tracker_id {
                     dict.insert(
                         "tracker id".into(),
-                        bencode::Value::Bytes(tracker_id.as_bytes().to_vec()),
+                        bencode::Value::Bytes(tracker_id.clone()),
                     );
                 }
                 dict.insert("complete".into(), bencode::Value::Int(announce.complete));

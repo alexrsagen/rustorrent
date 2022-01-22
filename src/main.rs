@@ -46,11 +46,10 @@ async fn main() -> Result<(), Error> {
             todo!()
         }
         cli::Command::Tracker => {
-            TrackerHttpServer::new(TrackerServerOptions {
+            TrackerHttpServer::run(TrackerServerOptions {
                 ip: opt.bind_address,
                 port_range: opt.bind_port,
             })
-            .run()
             .await?
         }
     }
