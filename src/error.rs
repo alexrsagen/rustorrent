@@ -51,7 +51,6 @@ pub enum Error {
     Utf8Invalid(std::string::FromUtf8Error),
     IpInvalid(std::net::AddrParseError),
     PortInvalid(std::num::ParseIntError),
-    UrlInvalid(url::ParseError),
     UriInvalid(hyper::http::uri::InvalidUri),
     ProtoInvalid(InvalidProto),
     ResolveError(Box<trust_dns_resolver::error::ResolveError>),
@@ -99,7 +98,6 @@ impl std::fmt::Display for Error {
             Error::Utf8Invalid(e) => write!(f, "invalid UTF-8 encoding: {}", e),
             Error::IpInvalid(e) => write!(f, "invalid IP address: {}", e),
             Error::PortInvalid(e) => write!(f, "invalid port: {}", e),
-            Error::UrlInvalid(e) => write!(f, "invalid URL: {}", e),
             Error::UriInvalid(e) => write!(f, "invalid URI: {}", e),
             Error::ProtoInvalid(e) => write!(f, "{}", e),
             Error::ResolveError(e) => write!(f, "unable to resolve address: {}", e),
@@ -148,11 +146,6 @@ impl From<std::string::FromUtf8Error> for Error {
 impl From<std::net::AddrParseError> for Error {
     fn from(e: std::net::AddrParseError) -> Self {
         Self::IpInvalid(e)
-    }
-}
-impl From<url::ParseError> for Error {
-    fn from(e: url::ParseError) -> Self {
-        Self::UrlInvalid(e)
     }
 }
 impl From<hyper::http::uri::InvalidUri> for Error {
