@@ -32,12 +32,13 @@ async fn main() -> Result<(), Error> {
         cli::Command::Download {
             torrent,
             destination,
-            ..
+            tracker,
         } => {
             let client = Client::new(ClientOptions {
                 ip: opt.bind_address,
                 port_range: opt.bind_port,
                 download_dir: destination,
+                tracker,
                 ..Default::default()
             });
             client.download(&torrent).await?;

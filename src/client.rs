@@ -1,4 +1,4 @@
-use tokio::task;
+use tokio::{task, sync::Mutex};
 use tokio::time::sleep;
 
 use crate::resolver;
@@ -55,6 +55,7 @@ pub struct ClientOptions {
     pub max_interval: Duration,
     pub default_interval: Duration,
     pub block_size: usize,
+    pub tracker: Option<String>,
 }
 
 impl Default for ClientOptions {
@@ -67,6 +68,7 @@ impl Default for ClientOptions {
             max_interval: Duration::from_secs(900),
             default_interval: Duration::from_secs(60),
             block_size: 16384,
+            tracker: None,
         }
     }
 }
@@ -109,15 +111,21 @@ impl Client {
 
         // read torrent from file or URI
         let http_client = DualSchemeClient::new_with_resolver(resolver.into());
-        let torrent = Arc::new(
-            Torrent::from_file_or_url(
-                torrent,
-                &http_client,
-                &self.local_peer,
-                self.opts.block_size,
-            )
-            .await?,
-        );
+        let mut torrent = Torrent::from_file_or_url(
+            torrent,
+            &http_client,
+            &self.local_peer,
+            self.opts.block_size,
+        )
+        .await?;
+
+        // replace announce list if tracker specified
+        if let Some(tracker) = &self.opts.tracker {
+            torrent.announce = Arc::new(vec![Mutex::new(vec![tracker.clone()])]);
+        }
+
+        // wrap Torrent in Arc
+        let torrent = Arc::new(torrent);
         print_metainfo_files(&torrent.metainfo);
 
         // TODO: handle incoming connections

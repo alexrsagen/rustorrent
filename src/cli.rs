@@ -35,6 +35,7 @@ pub enum Command {
         destination: PathBuf,
 
         /// Optional tracker URL
+        #[structopt(short = "t", long = "tracker")]
         tracker: Option<String>,
     },
 
@@ -43,9 +44,13 @@ pub enum Command {
         /// Torrent file path or URL
         torrent: String,
 
-        /// Donwload directory
+        /// Download directory
         #[structopt(default_value = ".")]
         destination: PathBuf,
+
+        /// Optional tracker URL
+        #[structopt(short = "t", long = "tracker")]
+        tracker: Option<String>,
     },
 
     /// Starts a tracker
