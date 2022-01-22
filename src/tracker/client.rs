@@ -111,9 +111,12 @@ impl<'a> TrackerClient<'a> {
         tracker_id: Option<&[u8]>,
     ) -> Result<Announce, Error> {
         let announce_uri = self.build_announce_uri(base_uri, torrent, tracker_id)?;
+        if crate::DEBUG {
+            println!("[debug] HTTP GET {}", &announce_uri);
+        }
         let mut res = self.client.get(&announce_uri).await?;
         if crate::DEBUG {
-            println!("[debug] HTTP GET {}: {}", &announce_uri, res.status());
+            println!("[debug] {:?} {}", res.version(), res.status());
         }
         let bytes = read_body(&mut res).await?;
         match bytes.try_into()? {

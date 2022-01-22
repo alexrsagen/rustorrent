@@ -158,9 +158,6 @@ impl DualSchemeClient {
     }
 
     pub async fn get(&self, uri: &Uri) -> Result<Response<Body>, Error> {
-        if crate::DEBUG {
-            println!("[debug] announce endpoint (hyper): {}", uri);
-        }
         let req = Request::builder()
             .method("GET")
             .uri(uri)

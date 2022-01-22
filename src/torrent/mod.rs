@@ -114,9 +114,12 @@ impl Torrent {
         block_size: usize,
     ) -> Result<Self, Error> {
         let metainfo_uri = path.parse::<hyper::Uri>()?;
+        if crate::DEBUG {
+            println!("[debug] HTTP GET {}", &path);
+        }
         let mut res = client.get(&metainfo_uri).await?;
         if crate::DEBUG {
-            println!("[debug] HTTP GET {}: {}", &path, res.status());
+            println!("[debug] {:?} {}", res.version(), res.status());
         }
         let bytes = read_body(&mut res).await?;
         let metainfo = bytes.try_into()?;
