@@ -79,6 +79,7 @@ pub enum Error {
         piece_index: usize,
         block_index: usize,
     },
+    AlreadyConnected,
     NotConnected,
     NoData,
     InvalidCommand,

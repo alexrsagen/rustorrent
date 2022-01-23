@@ -1,4 +1,5 @@
 pub mod metainfo;
+use chashmap::CHashMap;
 use metainfo::Metainfo;
 
 pub mod piece;
@@ -6,21 +7,19 @@ use piece::PieceStore;
 
 use crate::error::Error;
 use crate::http::{read_body, DualSchemeClient};
-use crate::peer::{Peer, PeerInfo, Peers};
+use crate::peer::{Peer, PeerInfo};
 use crate::peer::proto::Handshake;
 use crate::tracker::announce::Announce;
 use crate::skip_wrap_vec::SkipWrapVec;
 
 use chrono::{DateTime, Utc};
-use futures::StreamExt;
 use rand::seq::SliceRandom;
 use tokio::fs;
-use tokio::sync::RwLock;
+use parking_lot::RwLock;
 
 use std::convert::TryInto;
 use std::default::Default;
 use std::sync::atomic::AtomicUsize;
-use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum TorrentStatus {
@@ -42,12 +41,12 @@ pub struct Torrent {
     pub downloaded: AtomicUsize,
     pub status: TorrentStatus,
     pub paused: bool,
-    pub peers: Peers,
+    pub peers: CHashMap<PeerInfo, Peer>,
     // pub active_peers: AtomicUsize,
     pub pieces: PieceStore,
     pub metainfo: Metainfo,
     pub announce: Vec<SkipWrapVec<String>>,
-    pub announce_state: RwLock<TorrentAnnounceState>,
+    pub announce_state: RwLock<TorrentAnnounceState>, // TODO: eliminate mutex
     pub handshake: Handshake,
 }
 
@@ -69,7 +68,7 @@ impl Torrent {
             downloaded: AtomicUsize::new(0),
             status: TorrentStatus::Queued,
             paused: false,
-            peers: RwLock::new(vec![]),
+            peers: CHashMap::new(),
             // active_peers: AtomicUsize::new(0),
             pieces: PieceStore::new(piece_count, piece_size, block_size),
             metainfo,
@@ -128,27 +127,10 @@ impl Torrent {
         let metainfo = bytes.try_into()?;
         Ok(Self::new(metainfo, local_peer, block_size))
     }
+}
 
-    pub async fn has_peer(&self, info: &PeerInfo) -> bool {
-        self.peers
-            .read()
-            .await
-            .iter()
-            .any(|peer| &peer.info == info)
-    }
-
-    pub async fn append_peers(&self, peers: Vec<Peer>) {
-        let mut new_peers = futures::stream::iter(peers.into_iter())
-            .filter_map(|peer| async {
-                if !self.has_peer(&peer.info).await {
-                    Some(Arc::new(peer))
-                } else {
-                    None
-                }
-            })
-            .collect()
-            .await;
-
-        self.peers.write().await.append(&mut new_peers);
+impl PartialEq for Torrent {
+    fn eq(&self, other: &Self) -> bool {
+        self.metainfo == other.metainfo
     }
 }

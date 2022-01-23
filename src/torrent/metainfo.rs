@@ -73,6 +73,12 @@ pub struct Metainfo {
     pub encoding: Option<String>,
 }
 
+impl PartialEq for Metainfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.info_hash == other.info_hash
+    }
+}
+
 impl TryFrom<bencode::Dict> for Metainfo {
     type Error = Error;
     fn try_from(mut dict: bencode::Dict) -> Result<Self, Self::Error> {

@@ -11,17 +11,13 @@ mod port_range;
 pub use port_range::PortRange;
 
 use crate::bitfield::Bitfield;
+use crate::client::Client;
 use crate::error::Error;
-use crate::torrent::Torrent;
 
-use crossbeam_queue::SegQueue;
-use tokio::sync::{Mutex, RwLock};
-use tokio::time::timeout;
+use tokio::sync::Mutex;
 
-use std::sync::Arc;
 use std::time::Duration;
-
-pub type Peers = RwLock<Vec<Arc<Peer>>>;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum PeerError {
@@ -33,65 +29,58 @@ pub enum PeerError {
 #[derive(Debug)]
 pub struct Peer {
     pub info: PeerInfo,
-    pub torrent: Arc<Torrent>,
-    pub tx_queue: SegQueue<Message>,
-    pub bitfield: RwLock<Option<Bitfield>>,
-    conn: Mutex<Option<PeerConn>>,
+    pub info_hash: [u8; 20],
+    pub bitfield: Bitfield,
+    conn: Mutex<Option<PeerConn>>, // TODO: eliminate mutex
 }
 
 impl Peer {
-    pub fn new(info: PeerInfo, torrent: Arc<Torrent>) -> Self {
+    pub fn new(info: PeerInfo, info_hash: [u8; 20], client: Arc<Client>) -> Self {
+        let torrent = client.torrents.get(&info_hash);
+        let bitfield = match torrent {
+            Some(torrent) => Bitfield::new(torrent.metainfo.info.piece_hashes.len()),
+            None => Bitfield::new(0)
+        };
         Self {
             info,
-            torrent,
-            tx_queue: SegQueue::new(),
-            bitfield: RwLock::new(None),
+            info_hash,
+            bitfield,
             conn: Mutex::new(None),
         }
     }
 
     pub async fn connect(&self) -> Result<(), Error> {
-        let mut lock = match timeout(Duration::from_secs(10), self.conn.lock()).await {
-            Ok(lock) => lock,
-            Err(e) => {
-                return Err(Error::Timeout(e));
-            }
-        };
-
-        if lock.is_some() {
+        let mut guard = self.conn.lock().await;
+        if guard.is_some() {
             if crate::DEBUG {
                 println!("[debug] already connected to peer {}...", &self.info);
             }
             return Ok(());
         }
-
         // connect to peer
         if crate::DEBUG {
             println!("[debug] connecting to peer {}...", &self.info);
         }
         match PeerConn::connect(self.info.addr).await {
             Ok(conn) => {
-                *lock = Some(conn);
+                *guard = Some(conn);
                 Ok(())
             }
             Err(e) => Err(e),
         }
     }
 
-    pub async fn handshake(&self) -> Result<(), Error> {
-        let mut lock = match timeout(Duration::from_secs(10), self.conn.lock()).await {
-            Ok(lock) => lock,
-            Err(e) => {
-                return Err(Error::Timeout(e));
-            }
+    pub async fn handshake(&self, client: Arc<Client>) -> Result<(), Error> {
+        let torrent = match client.torrents.get(&self.info_hash) {
+            Some(torrent) => torrent,
+            None => return Err(Error::InfoHashInvalid),
         };
-        let conn = match &mut *lock {
-            Some(conn) => conn,
-            None => {
-                return Err(Error::NotConnected);
-            }
-        };
-        conn.write_handshake(&self.torrent.handshake).await?;
+        let mut guard = self.conn.lock().await;
+        if guard.is_none() {
+            return Err(Error::NotConnected);
+        }
+        let conn = guard.as_mut().unwrap();
+        conn.write_handshake(&torrent.handshake).await?;
         conn.flush().await?;
         let handshake = conn.read_handshake().await?;
         // check peer_id against known value, if known
@@ -101,7 +90,7 @@ impl Peer {
             }
         }
         // check info_hash against known value
-        if handshake.info_hash != self.torrent.metainfo.info_hash {
+        if handshake.info_hash != torrent.metainfo.info_hash {
             return Err(Error::InfoHashInvalid);
         }
         Ok(())
@@ -113,19 +102,16 @@ impl Peer {
     // - Message::Cancel(_)
     // - Message::Port(_)
     // otherwise, returns Error::MessageHandled
-    pub async fn read(&self) -> Result<Message, Error> {
-        let mut lock = match timeout(Duration::from_secs(10), self.conn.lock()).await {
-            Ok(lock) => lock,
-            Err(e) => {
-                return Err(Error::Timeout(e));
-            }
+    pub async fn read(&self, client: Arc<Client>) -> Result<Message, Error> {
+        let torrent = match client.torrents.get(&self.info_hash) {
+            Some(torrent) => torrent,
+            None => return Err(Error::InfoHashInvalid),
         };
-        let conn = match &mut *lock {
-            Some(conn) => conn,
-            None => {
-                return Err(Error::NotConnected);
-            }
-        };
+        let mut guard = self.conn.lock().await;
+        if guard.is_none() {
+            return Err(Error::NotConnected);
+        }
+        let conn = guard.as_mut().unwrap();
         let msg = conn.read_msg().await?;
         conn.state.rx_msg_count += 1;
         match msg {
@@ -161,41 +147,30 @@ impl Peer {
                 Err(Error::MessageHandled)
             }
             Message::Have(index) => {
-                let mut bitfield_guard = self.bitfield.write().await;
-                if bitfield_guard.is_none() {
-                    *bitfield_guard =
-                        Some(Bitfield::new(self.torrent.metainfo.info.piece_hashes.len()));
-                }
                 if crate::DEBUG {
                     println!("[debug] peer {} has piece {}", &self.info, index);
                 }
-                if let Some(bitfield) = bitfield_guard.as_mut() {
-                    bitfield.set_bit(index as usize);
-                    self.torrent.pieces.increase_availability(&bitfield).await?;
-                }
+                self.bitfield.set_bit(index as usize);
+                torrent.pieces.increase_availability(&self.bitfield).await?;
                 Err(Error::MessageHandled)
             }
             Message::Bitfield(mut bitfield) => {
                 if conn.state.rx_msg_count != 1 {
                     return Err(Error::UnexpectedOrInvalidBitfield);
                 }
-                let mut bitfield_guard = self.bitfield.write().await;
-                if bitfield_guard.is_some() {
-                    return Err(Error::UnexpectedOrInvalidBitfield);
-                }
-                bitfield.resize(self.torrent.metainfo.info.piece_hashes.len());
+                bitfield.resize(torrent.metainfo.info.piece_hashes.len());
                 if bitfield.spare_bits_as_byte() != 0 {
                     return Err(Error::UnexpectedOrInvalidBitfield);
                 }
                 if crate::DEBUG {
                     println!("[debug] peer {} sent {:?}", &self.info, &bitfield);
                 }
-                self.torrent.pieces.increase_availability(&bitfield).await?;
-                *bitfield_guard = Some(bitfield);
+                torrent.pieces.increase_availability(&bitfield).await?;
+                self.bitfield.try_overwrite_with(&bitfield)?;
                 Err(Error::MessageHandled)
             }
             Message::Piece(block) => {
-                self.torrent.pieces.write_block(&self, block).await?;
+                torrent.pieces.write_block(&self, client.clone(), block).await?;
                 Err(Error::MessageHandled)
             }
             Message::Request(request) => {
@@ -228,18 +203,11 @@ impl Peer {
     }
 
     pub async fn write(&self, msg: Message) -> Result<(), Error> {
-        let mut lock = match timeout(Duration::from_secs(10), self.conn.lock()).await {
-            Ok(lock) => lock,
-            Err(e) => {
-                return Err(Error::Timeout(e));
-            }
-        };
-        let conn = match &mut *lock {
-            Some(conn) => conn,
-            None => {
-                return Err(Error::NotConnected);
-            }
-        };
+        let mut guard = self.conn.lock().await;
+        if guard.is_none() {
+            return Err(Error::NotConnected);
+        }
+        let conn = guard.as_mut().unwrap();
         let mut am_choking = conn.state.am_choking;
         let mut am_interested = conn.state.am_interested;
         match &msg {
@@ -287,67 +255,50 @@ impl Peer {
     }
 
     pub async fn keepalive(&self) -> Result<(), Error> {
-        let mut lock = match timeout(Duration::from_secs(10), self.conn.lock()).await {
-            Ok(lock) => lock,
-            Err(e) => {
-                return Err(Error::Timeout(e));
-            }
-        };
-        let conn = match &mut *lock {
-            Some(conn) => conn,
-            None => {
+        let keepalive_interval_passed = {
+            let mut guard = self.conn.lock().await;
+            if guard.is_none() {
                 return Err(Error::NotConnected);
             }
+            let conn = guard.as_mut().unwrap();
+            let keepalive_interval =
+                conn.opts.keepalive_interval - conn.opts.tx_timeout.unwrap_or(Duration::from_secs(5));
+            conn.duration_since_last_tx() > keepalive_interval
         };
-        let keepalive_interval =
-            conn.opts.keepalive_interval - conn.opts.tx_timeout.unwrap_or(Duration::from_secs(5));
-        if conn.duration_since_last_tx() > keepalive_interval {
-            std::mem::drop(conn);
-            std::mem::drop(lock);
-            self.write(Message::Keepalive).await?;
+        if keepalive_interval_passed {
+            self.write(Message::Keepalive).await
+        } else {
+            Ok(())
         }
-        Ok(())
     }
 
     pub async fn flush(&self) -> Result<(), Error> {
-        let mut lock = match timeout(Duration::from_secs(10), self.conn.lock()).await {
-            Ok(lock) => lock,
-            Err(e) => {
-                return Err(Error::Timeout(e));
-            }
-        };
-        let conn = match &mut *lock {
-            Some(conn) => conn,
-            None => {
-                return Err(Error::NotConnected);
-            }
-        };
-        conn.flush().await
+        let mut guard = self.conn.lock().await;
+        if let Some(conn) = guard.as_mut() {
+            return conn.flush().await;
+        }
+        Err(Error::NotConnected)
     }
 
     pub async fn state(&self) -> Result<PeerConnState, Error> {
-        let mut lock = match timeout(Duration::from_secs(10), self.conn.lock()).await {
-            Ok(lock) => lock,
-            Err(e) => {
-                return Err(Error::Timeout(e));
-            }
-        };
-        let conn = match &mut *lock {
-            Some(conn) => conn,
-            None => {
-                return Err(Error::NotConnected);
-            }
-        };
-        Ok(conn.state)
+        let mut guard = self.conn.lock().await;
+        if let Some(conn) = guard.as_mut() {
+            return Ok(conn.state);
+        }
+        Err(Error::NotConnected)
     }
 
-    pub async fn run_event_loop(&self) -> Result<(), PeerError> {
+    pub async fn run_event_loop(&self, client: Arc<Client>) -> Result<(), PeerError> {
+        let torrent = match client.torrents.get(&self.info_hash) {
+            Some(torrent) => torrent,
+            None => return Err(PeerError::ConnectionError(Error::InfoHashInvalid)),
+        };
         // run event loop
         loop {
             if crate::DEBUG {
                 println!("[debug] polling for peer {} message...", &self.info);
             }
-            match self.read().await {
+            match self.read(client.clone()).await {
                 Ok(msg) => {
                     match msg {
                         Message::Port(dht_port) => {
@@ -395,34 +346,26 @@ impl Peer {
                 Err(e) => return Err(PeerError::ReadError(e)),
             }
 
-            // update interested state
-            let msg_interest = if let Some(bitfield_peer) = self.bitfield.read().await.as_ref() {
-                // compare peer bitfield with own bitfield
-                let bitfield = self.torrent.pieces.as_bitfield();
-                let bitfield_interesting = bitfield_peer.except(&bitfield);
-                if bitfield_interesting.is_all_clear() {
-                    Some(Message::NotInterested)
-                } else {
-                    Some(Message::Interested)
-                }
+            // update interested state by comparing peer bitfield with torrent bitfield
+            let bitfield = torrent.pieces.as_bitfield();
+            let bitfield_interesting = self.bitfield.except(&bitfield);
+            let msg_interest = if bitfield_interesting.is_all_clear() {
+                Message::NotInterested
             } else {
-                None
+                Message::Interested
             };
-
-            if let Some(msg_interest) = msg_interest {
-                // send message (NoOp = already same state)
-                match self.write(msg_interest.clone()).await {
-                    Ok(_) => {
-                        if crate::DEBUG {
-                            println!(
-                                "[debug] updated peer {} interest: {:?}",
-                                &self.info, msg_interest
-                            );
-                        }
-                    }
-                    Err(Error::NoOp) => {}
-                    Err(e) => return Err(PeerError::WriteError(e)),
-                };
+            // send message (NoOp = already same state)
+            if crate::DEBUG {
+                println!(
+                    "[debug] updating peer {} interest: {:?}",
+                    &self.info, &msg_interest
+                );
+            }
+            match self.write(msg_interest).await {
+                Ok(_) => {
+                }
+                Err(Error::NoOp) => {}
+                Err(e) => return Err(PeerError::WriteError(e)),
             }
 
             // TODO: choke/unchoke peer here, but make the decision elsewhere(?)
@@ -459,80 +402,6 @@ impl Peer {
 
             // TODO: find and cancel timed out requests
         }
-    }
-
-    pub async fn connect_and_run_event_loop(self: Arc<Self>) -> Result<(), PeerError> {
-        self.connect()
-            .await
-            .map_err(|e| PeerError::ConnectionError(e))?;
-
-        // handshake with peer
-        match self.handshake().await {
-            Ok(_) => {
-                if crate::DEBUG {
-                    println!("[debug] connected to peer {}", &self.info);
-                }
-                // self.torrent.active_peers.fetch_add(1, Ordering::SeqCst);
-
-                // if we have some pieces, send bitfield
-                let bitfield = self.torrent.pieces.as_bitfield();
-                if !bitfield.is_all_clear() {
-                    if crate::DEBUG {
-                        println!(
-                            "[debug] sending bitfield to peer {}: {:?}",
-                            &self.info, &bitfield
-                        );
-                    }
-                    match self.write(Message::Bitfield(bitfield)).await {
-                        Ok(_) => {
-                            match self.run_event_loop().await {
-                                Ok(_) => {
-                                    if crate::DEBUG {
-                                        println!("[debug] disconnected from peer {}", &self.info);
-                                    }
-                                }
-                                Err(e) => {
-                                    if crate::DEBUG {
-                                        println!(
-                                            "[debug] disconnected from peer {}: {:?}",
-                                            &self.info, e
-                                        );
-                                    }
-                                }
-                            };
-                        }
-                        Err(e) => {
-                            println!(
-                                "[warning] unable to send our bitfield to peer {}: {:?}",
-                                &self.info, e
-                            );
-                        }
-                    }
-                }
-
-                // self.torrent.active_peers.fetch_sub(1, Ordering::SeqCst);
-                if let Some(peer_bitfield) = self.bitfield.read().await.as_ref() {
-                    let _ = self
-                        .torrent
-                        .pieces
-                        .decrease_availability(peer_bitfield)
-                        .await;
-                }
-            }
-            Err(e) => {
-                println!(
-                    "[warning] unable to handshake with peer {}: {:?}",
-                    &self.info, e
-                );
-            }
-        }
-
-        let mut peers = self.torrent.peers.write().await;
-        if let Some(pos) = peers.iter().position(|x| x.info == self.info) {
-            peers.remove(pos);
-        }
-
-        Ok(())
     }
 }
 

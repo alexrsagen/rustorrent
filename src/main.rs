@@ -20,6 +20,7 @@ pub mod client;
 use client::{Client, ClientOptions};
 
 use std::default::Default;
+use std::sync::Arc;
 
 pub const DEBUG: bool = true;
 
@@ -33,13 +34,13 @@ async fn main() -> Result<(), Error> {
             destination,
             tracker,
         } => {
-            let client = Client::new(ClientOptions {
+            let client = Arc::new(Client::new(ClientOptions {
                 ip: opt.bind_address,
                 port_range: opt.bind_port,
                 download_dir: destination,
                 tracker,
                 ..Default::default()
-            });
+            }));
             client.download(&torrent).await?;
         }
         cli::Command::Upload { .. } => {

@@ -5,7 +5,7 @@ use std::convert::{From, TryFrom, TryInto};
 
 pub const PSTR: &str = "BitTorrent protocol";
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Handshake {
     pub pstr: String,
     pub reserved: Bitfield,
@@ -71,10 +71,10 @@ impl TryFrom<Vec<u8>> for Handshake {
 impl From<&Handshake> for Vec<u8> {
     fn from(value: &Handshake) -> Self {
         let mut msg = Vec::from([value.pstr.len() as u8]);
-        msg.extend(value.pstr.as_bytes().iter());
-        msg.extend(value.reserved.as_bytes().iter());
-        msg.extend(value.info_hash.iter());
-        msg.extend(value.peer_id.iter());
+        msg.extend(value.pstr.as_bytes());
+        msg.extend(value.reserved.to_vec());
+        msg.extend(value.info_hash);
+        msg.extend(value.peer_id);
         msg
     }
 }
@@ -125,7 +125,7 @@ impl From<Vec<u8>> for PieceBlock {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Message {
     InvalidId,
     InvalidLength,
@@ -173,7 +173,7 @@ impl From<&[u8]> for Message {
                 }
                 Self::Have(u32::from_be_bytes(bytes[1..5].try_into().unwrap()))
             }
-            Self::ID_BITFIELD => Self::Bitfield(Bitfield::from_bytes(bytes[1..].to_vec())),
+            Self::ID_BITFIELD => Self::Bitfield(Bitfield::from_bytes_unchecked(bytes[1..].to_vec())),
             Self::ID_REQUEST => {
                 if bytes.len() != 13 {
                     return Self::InvalidLength;
@@ -230,33 +230,33 @@ impl From<Message> for Vec<u8> {
             }
             Message::Have(v) => {
                 bytes.push(Message::ID_HAVE);
-                bytes.extend(v.to_be_bytes().iter());
+                bytes.extend(v.to_be_bytes());
             }
             Message::Bitfield(v) => {
                 bytes.push(Message::ID_BITFIELD);
-                bytes.extend(v.as_bytes().iter());
+                bytes.extend(v.to_vec());
             }
             Message::Request(v) => {
                 bytes.push(Message::ID_REQUEST);
-                bytes.extend(v.index.to_be_bytes().iter());
-                bytes.extend(v.begin.to_be_bytes().iter());
-                bytes.extend(v.length.to_be_bytes().iter());
+                bytes.extend(v.index.to_be_bytes());
+                bytes.extend(v.begin.to_be_bytes());
+                bytes.extend(v.length.to_be_bytes());
             }
             Message::Piece(v) => {
                 bytes.push(Message::ID_PIECE);
-                bytes.extend(v.index.to_be_bytes().iter());
-                bytes.extend(v.begin.to_be_bytes().iter());
-                bytes.extend(v.data.iter());
+                bytes.extend(v.index.to_be_bytes());
+                bytes.extend(v.begin.to_be_bytes());
+                bytes.extend(v.data);
             }
             Message::Cancel(v) => {
                 bytes.push(Message::ID_CANCEL);
-                bytes.extend(v.index.to_be_bytes().iter());
-                bytes.extend(v.begin.to_be_bytes().iter());
-                bytes.extend(v.length.to_be_bytes().iter());
+                bytes.extend(v.index.to_be_bytes());
+                bytes.extend(v.begin.to_be_bytes());
+                bytes.extend(v.length.to_be_bytes());
             }
             Message::Port(v) => {
                 bytes.push(Message::ID_PORT);
-                bytes.extend(v.to_be_bytes().iter());
+                bytes.extend(v.to_be_bytes());
             }
         }
         bytes

@@ -1,4 +1,5 @@
 use crate::bitfield::Bitfield;
+use crate::client::Client;
 use crate::error::Error;
 use crate::peer::proto::{PieceBlock, Request};
 use crate::peer::Peer;
@@ -120,7 +121,7 @@ pub type Pieces = Vec<Arc<Piece>>;
 pub struct PieceStore {
     block_size: usize,
     pieces: Pieces,
-    pieces_by_priority: RwLock<Vec<Vec<usize>>>,
+    pieces_by_priority: RwLock<Vec<Vec<usize>>>, // TODO: eliminate mutex
     pick_mode: AtomicCell<PickMode>,
 }
 
@@ -226,13 +227,13 @@ impl PieceStore {
         Ok(())
     }
 
-    pub async fn write_block(&self, peer: &Peer, block: PieceBlock) -> Result<(), Error> {
+    pub async fn write_block(&self, peer: &Peer, client: Arc<Client>, block: PieceBlock) -> Result<(), Error> {
         let piece_index = block.index as usize;
         if piece_index >= self.pieces.len() {
             return Err(Error::OutOfRange);
         }
         let piece = &self.pieces[piece_index];
-        piece.write_block(peer, block, self.block_size).await?;
+        piece.write_block(peer, client, block, self.block_size).await?;
         // check for complete (verified) piece
         if piece.state.load() == PieceState::Complete {
             // update pick mode
@@ -244,59 +245,60 @@ impl PieceStore {
     }
 
     pub fn as_bitfield(&self) -> Bitfield {
-        let mut bitfield = Bitfield::new(self.pieces.len());
+        let bitfield = Bitfield::new(self.pieces.len());
         for (i, piece) in self.pieces.iter().enumerate() {
             bitfield.set(i, piece.state.load() == PieceState::Complete);
         }
         bitfield
     }
 
-    pub async fn pick_block(&self, peer: Arc<Peer>) -> Option<PieceBlockRequest> {
-        let piece_size = peer.torrent.metainfo.info.piece_length;
+    pub async fn pick_block(&self, peer: Arc<Peer>, client: Arc<Client>) -> Option<PieceBlockRequest> {
+        let torrent = match client.torrents.get(&peer.info_hash) {
+            Some(torrent) => torrent,
+            None => return None,
+        };
+        let piece_size = torrent.metainfo.info.piece_length;
 
-        // get peer bitfield
-        if let Some(peer_bitfield) = peer.bitfield.read().await.as_ref() {
-            // pick first available piece in highest priority bucket.
-            // since each bucket has a random order, the piece will be random.
-            let pieces_by_priority = self.pieces_by_priority.read().await;
-            for bucket in pieces_by_priority.iter() {
-                for piece_index in bucket {
-                    // skip piece if peer does not have it
-                    if !peer_bitfield.get(*piece_index) {
-                        continue;
-                    }
-
-                    // find all the open blocks of the piece
-                    let mut blocks = self.pieces[*piece_index].blocks.lock().await;
-                    let open_blocks: Vec<usize> = blocks
-                        .iter()
-                        .enumerate()
-                        .filter(|&(_, block)| *block == PieceBlockState::Open)
-                        .map(|(i, _)| i)
-                        .collect();
-                    if open_blocks.is_empty() {
-                        continue;
-                    }
-
-                    // get a random open block
-                    let block_index = rand::thread_rng().gen_range(0..open_blocks.len());
-                    let block_begin = get_block_begin(self.block_size, block_index);
-                    let block_size = get_block_size(piece_size, self.block_size, block_index).unwrap();
-
-                    let req = PieceBlockRequest {
-                        picked_at: Utc::now(),
-                        request: Request {
-                            index: *piece_index as u32,
-                            begin: block_begin as u32,
-                            length: block_size as u32,
-                        },
-                        peer: peer.clone(),
-                    };
-
-                    // update block state
-                    blocks[block_index] = PieceBlockState::Requested(req.clone());
-                    return Some(req);
+        // pick first available piece in highest priority bucket.
+        // since each bucket has a random order, the piece will be random.
+        let pieces_by_priority = self.pieces_by_priority.read().await;
+        for bucket in pieces_by_priority.iter() {
+            for piece_index in bucket {
+                // skip piece if peer does not have it
+                if !peer.bitfield.get(*piece_index) {
+                    continue;
                 }
+
+                // find all the open blocks of the piece
+                let mut blocks = self.pieces[*piece_index].blocks.lock().await;
+                let open_blocks: Vec<usize> = blocks
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, block)| *block == PieceBlockState::Open)
+                    .map(|(i, _)| i)
+                    .collect();
+                if open_blocks.is_empty() {
+                    continue;
+                }
+
+                // get a random open block
+                let block_index = rand::thread_rng().gen_range(0..open_blocks.len());
+                let block_begin = get_block_begin(self.block_size, block_index);
+                let block_size = get_block_size(piece_size, self.block_size, block_index).unwrap();
+
+                let req = PieceBlockRequest {
+                    picked_at: Utc::now(),
+                    request: Request {
+                        index: *piece_index as u32,
+                        begin: block_begin as u32,
+                        length: block_size as u32,
+                    },
+                    peer: peer.clone(),
+                };
+
+                // update block state
+                blocks[block_index] = PieceBlockState::Requested(req.clone());
+                return Some(req);
             }
         }
         None
@@ -396,9 +398,9 @@ impl PieceData {
 
 #[derive(Debug)]
 pub struct Piece {
-    data: RwLock<PieceData>,
+    data: RwLock<PieceData>, // TODO: eliminate mutex
     state: AtomicCell<PieceState>,
-    blocks: Mutex<Vec<PieceBlockState>>,
+    blocks: Mutex<Vec<PieceBlockState>>, // TODO: eliminate mutex
     availability: AtomicUsize,
 }
 
@@ -443,19 +445,25 @@ impl Piece {
     async fn write_block(
         &self,
         peer: &Peer,
+        client: Arc<Client>,
         block: PieceBlock,
         block_size: usize,
     ) -> Result<(), Error> {
+        let torrent = match client.torrents.get(&peer.info_hash) {
+            Some(torrent) => torrent,
+            None => return Err(Error::InfoHashInvalid),
+        };
+
         let piece_index = block.index as usize;
-        if piece_index >= peer.torrent.metainfo.info.piece_hashes.len() {
+        if piece_index >= torrent.metainfo.info.piece_hashes.len() {
             return Err(Error::InvalidPieceBlockMessage {
                 piece_index: 0,
                 block_index: 0,
             });
         }
 
-        let piece_size = peer.torrent.metainfo.info.piece_length;
-        let piece_hash = &peer.torrent.metainfo.info.piece_hashes[piece_index];
+        let piece_size = torrent.metainfo.info.piece_length;
+        let piece_hash = &torrent.metainfo.info.piece_hashes[piece_index];
 
         let block_begin = block.begin as usize;
         let block_end = block_begin + block.data.len();

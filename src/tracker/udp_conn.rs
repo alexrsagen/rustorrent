@@ -91,14 +91,14 @@ impl From<&Request> for Vec<u8> {
                 bytes.extend_from_slice(&key.to_be_bytes()[..]);
                 bytes.extend_from_slice(&num_want.to_be_bytes()[..]);
                 bytes.extend_from_slice(&port.to_be_bytes()[..]);
-                let mut extensions = Bitfield::new(16);
+                let extensions = Bitfield::new(16);
                 if auth.is_some() {
                     extensions.set_bit(0);
                 }
                 if request_string.is_some() {
                     extensions.set_bit(1);
                 }
-                bytes.extend_from_slice(extensions.as_bytes());
+                bytes.extend_from_slice(&extensions.to_vec());
                 if let Some(v) = auth {
                     let passwd_hash: [u8; 20] = Sha1::digest(&bytes).into();
                     bytes.extend_from_slice(&(v.username.len() as i8).to_be_bytes()[..]);

@@ -194,16 +194,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crossbeam-queue"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b979d76c9fcb84dffc80a73f7290da0f83e4c95773494674cb44b76d13a7a110"
-dependencies = [
- "cfg-if",
- "crossbeam-utils",
-]
-
-[[package]]
 name = "crossbeam-utils"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1079,7 +1069,6 @@ dependencies = [
  "bytes",
  "chashmap",
  "chrono",
- "crossbeam-queue",
  "crossbeam-utils",
  "form_urlencoded",
  "futures",
@@ -1090,6 +1079,7 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "nom",
+ "parking_lot 0.11.2",
  "percent-encoding",
  "rand 0.8.4",
  "rustls 0.20.2",

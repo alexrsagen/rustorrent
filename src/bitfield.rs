@@ -1,5 +1,7 @@
 use crate::error::Error;
+
 use std::ops::{Bound, RangeBounds};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 fn bytes_to_bits(bytes: usize) -> usize {
     bytes * 8
@@ -36,17 +38,45 @@ fn range_to_inclusive_bounds<R: RangeBounds<usize>>(range: R) -> (usize, usize) 
     (start, end)
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug)]
 pub struct Bitfield {
-    data: Vec<u8>,
+    data: Vec<AtomicU8>,
     bits: usize,
+}
+
+impl Clone for Bitfield {
+    fn clone(&self) -> Self {
+        Self::try_from_bytes(self.to_vec(), self.bits).unwrap()
+    }
+}
+
+impl PartialEq for Bitfield {
+    fn eq(&self, other: &Self) -> bool {
+        if self.bits != other.bits {
+            return false;
+        }
+
+        let (end_index, end_bit) = bits_to_index_bit(self.bits);
+
+        for index in 0..=end_index {
+            let index_end_bit = if index == end_index { end_bit } else { 7 };
+            let bitmask = bitmask_between(0, index_end_bit);
+            let byte = self.data[index].load(Ordering::SeqCst);
+            let other_byte = other.data[index].load(Ordering::SeqCst);
+            if byte & bitmask != other_byte & bitmask {
+                return false;
+            }
+        }
+
+        true
+    }
 }
 
 impl Bitfield {
     pub fn new(bits: usize) -> Self {
         let len = bits_to_bytes(bits);
         Self {
-            data: vec![0; len],
+            data: std::iter::repeat_with(|| AtomicU8::new(0)).take(len).collect(),
             bits,
         }
     }
@@ -55,16 +85,19 @@ impl Bitfield {
         if data.len() != bits_to_bytes(bits) {
             return Err(Error::ValueLengthInvalid("bitfield data".into()));
         }
-        Ok(Self { data, bits })
+        Ok(Self::from_bytes_unchecked(data))
     }
 
-    pub fn from_bytes(data: Vec<u8>) -> Self {
+    pub fn from_bytes_unchecked(data: Vec<u8>) -> Self {
         let bits = bytes_to_bits(data.len());
-        Self { data, bits }
+        Self {
+            data: data.into_iter().map(|byte| AtomicU8::new(byte)).collect(),
+            bits,
+        }
     }
 
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.data
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.data.iter().map(|byte| byte.load(Ordering::SeqCst)).collect()
     }
 
     pub fn len(&self) -> usize {
@@ -77,14 +110,15 @@ impl Bitfield {
 
     pub fn resize(&mut self, bits: usize) -> &mut Self {
         let len = bits_to_bytes(bits);
-        self.data.resize(len, 0);
+        self.data.resize_with(len, || AtomicU8::new(0));
         self.bits = bits;
         self
     }
 
     pub fn spare_bits_as_byte(&self) -> u8 {
         let spare_bits = bytes_to_bits(self.data.len()) - self.bits;
-        self.data[self.data.len() - 1] << spare_bits
+        let byte = self.data[self.data.len() - 1].load(Ordering::SeqCst);
+        byte << spare_bits
     }
 
     pub fn get(&self, bit: usize) -> bool {
@@ -92,22 +126,23 @@ impl Bitfield {
         if index >= self.data.len() {
             return false;
         }
-        (self.data[index] & bitmask_at(bit)) >> (7 - bit) == 1
+        let byte = self.data[index].load(Ordering::SeqCst);
+        (byte & bitmask_at(bit)) >> (7 - bit) == 1
     }
 
-    pub fn set_bit(&mut self, bit: usize) -> &mut Self {
+    pub fn set_bit(&self, bit: usize) -> &Self {
         let (index, bit) = bits_to_index_bit(bit);
-        self.data[index] |= bitmask_at(bit);
+        self.data[index].fetch_or(bitmask_at(bit), Ordering::SeqCst);
         self
     }
 
-    pub fn clear_bit(&mut self, bit: usize) -> &mut Self {
+    pub fn clear_bit(&self, bit: usize) -> &Self {
         let (index, bit) = bits_to_index_bit(bit);
-        self.data[index] &= !bitmask_at(bit);
+        self.data[index].fetch_and(!bitmask_at(bit), Ordering::SeqCst);
         self
     }
 
-    pub fn set(&mut self, bit: usize, value: bool) -> &mut Self {
+    pub fn set(&self, bit: usize, value: bool) -> &Self {
         if value {
             self.set_bit(bit)
         } else {
@@ -115,11 +150,11 @@ impl Bitfield {
         }
     }
 
-    fn range_update<R: RangeBounds<usize>, F: Fn(&mut u8, u8)>(
-        &mut self,
+    fn range_update<R: RangeBounds<usize>, F: Fn(&AtomicU8, u8)>(
+        &self,
         range: R,
         update_block: F,
-    ) -> &mut Self {
+    ) -> &Self {
         let (start_bit, end_bit) = range_to_inclusive_bounds(range);
         let (start_index, start_bit) = bits_to_index_bit(start_bit);
         let (end_index, end_bit) = bits_to_index_bit(end_bit);
@@ -128,7 +163,7 @@ impl Bitfield {
             let index_start_bit = if index == start_index { start_bit } else { 0 };
             let index_end_bit = if index == end_index { end_bit } else { 7 };
             update_block(
-                &mut self.data[index],
+                &self.data[index],
                 bitmask_between(index_start_bit, index_end_bit),
             );
         }
@@ -145,7 +180,8 @@ impl Bitfield {
             let index_start_bit = if index == start_index { start_bit } else { 0 };
             let index_end_bit = if index == end_index { end_bit } else { 7 };
             let bitmask = bitmask_between(index_start_bit, index_end_bit);
-            if self.data[index] & bitmask != val & bitmask {
+            let byte = self.data[index].load(Ordering::SeqCst);
+            if byte & bitmask != val & bitmask {
                 return false;
             }
         }
@@ -153,15 +189,15 @@ impl Bitfield {
         true
     }
 
-    pub fn set_range<R: RangeBounds<usize>>(&mut self, range: R) -> &mut Self {
+    pub fn set_range<R: RangeBounds<usize>>(&self, range: R) -> &Self {
         self.range_update(range, |block, bitmask| {
-            *block |= bitmask;
+            block.fetch_or(bitmask, Ordering::SeqCst);
         })
     }
 
-    pub fn clear_range<R: RangeBounds<usize>>(&mut self, range: R) -> &mut Self {
+    pub fn clear_range<R: RangeBounds<usize>>(&self, range: R) -> &Self {
         self.range_update(range, |block, bitmask| {
-            *block &= !bitmask;
+            block.fetch_and(!bitmask, Ordering::SeqCst);
         })
     }
 
@@ -182,13 +218,25 @@ impl Bitfield {
     }
 
     pub fn except(&self, other: &Self) -> Self {
-        if other.bits != self.bits {
+        if self.bits != other.bits {
             return Self::new(0);
         }
         let mut new = Self::new(self.bits);
         for i in 0..self.data.len() {
-            new.data[i] = self.data[i] & !other.data[i];
+            let byte = self.data[i].load(Ordering::SeqCst);
+            let other_byte = other.data[i].load(Ordering::SeqCst);
+            new.data[i] = AtomicU8::new(byte & !other_byte);
         }
         new
+    }
+
+    pub fn try_overwrite_with(&self, other: &Self) -> Result<(), Error> {
+        if self.bits != other.bits {
+            return Err(Error::OutOfRange);
+        }
+        for i in 0..self.data.len() {
+            self.data[i].store(other.data[i].load(Ordering::SeqCst), Ordering::SeqCst);
+        }
+        Ok(())
     }
 }

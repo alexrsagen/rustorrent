@@ -1,20 +1,16 @@
-use tokio::task;
-use tokio::time::sleep;
-
 use crate::resolver;
-
 use crate::http::DualSchemeClient;
-use chrono::Utc;
-use rand::seq::SliceRandom;
-
+use crate::tracker::{TrackerClient, TrackerClientOptions};
+use crate::peer::{Peer, PeerInfo, PortRange};
+use crate::peer::proto::Message;
+use crate::error::Error;
 use crate::torrent::metainfo::{Files, Metainfo};
 use crate::torrent::Torrent;
 
-use crate::tracker::{TrackerClient, TrackerClientOptions};
-
-use crate::peer::{Peer, PeerInfo, Peers, PortRange};
-
-use crate::error::Error;
+use chashmap::CHashMap;
+use tokio::task;
+use tokio::time::sleep;
+use chrono::Utc;
 
 use std::cmp::{max, min};
 use std::default::Default;
@@ -35,14 +31,6 @@ fn print_metainfo_files(metainfo: &Metainfo) {
             println!("- {}", file);
         }
     };
-    println!(" ");
-}
-
-async fn print_peers(peers: &Peers) {
-    println!("[debug] torrent peers:");
-    for peer in peers.read().await.iter() {
-        println!("- {}", &peer.info);
-    }
     println!(" ");
 }
 
@@ -73,19 +61,20 @@ impl Default for ClientOptions {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Client {
     pub opts: ClientOptions,
-    local_peer: Arc<PeerInfo>,
+    local_peer: PeerInfo,
+    pub torrents: CHashMap<[u8; 20], Torrent>,
 }
 
 impl Client {
     pub fn new(opts: ClientOptions) -> Self {
-        let local_peer = Arc::new(PeerInfo::new_local("-RS0001-", opts.ip, opts.port_range));
+        let local_peer = PeerInfo::new_local("-RS0001-", opts.ip, opts.port_range);
         if crate::DEBUG {
             println!("[debug] local peer: {}", local_peer);
         }
-        Self { opts, local_peer }
+        Self { opts, local_peer, torrents: CHashMap::new() }
     }
 
     /// Download method, implementing rarest first piece selection algorithm:
@@ -100,7 +89,7 @@ impl Client {
     /// - 3. pick a random piece from the rarest piece(s)
     /// - 4. create a work queue for each peer
     /// - 5. start requesting piece blocks from all peers
-    pub async fn download(&self, torrent: &str) -> Result<(), Error> {
+    pub async fn download(self: Arc<Self>, torrent: &str) -> Result<(), Error> {
         // create tracker client
         let resolver = resolver::cloudflare_https(resolver::default_opts())?;
         let tracker_client = TrackerClient::new_with_resolver(
@@ -124,9 +113,21 @@ impl Client {
             torrent.announce = vec![vec![tracker.clone()].into()];
         }
 
-        // wrap Torrent in Arc
-        let torrent = Arc::new(torrent);
-        print_metainfo_files(&torrent.metainfo);
+        // add torrent to client
+        let info_hash = torrent.metainfo.info_hash;
+        if self.torrents.contains_key(&info_hash) {
+            // TODO: un-pause torrent if paused
+            return Ok(());
+        }
+        self.torrents.insert(info_hash, torrent);
+
+        // get new reference to torrent
+        let torrent = self.torrents.get(&info_hash).unwrap();
+
+        // print files when starting download
+        if crate::DEBUG {
+            print_metainfo_files(&torrent.metainfo);
+        }
 
         // TODO: handle incoming connections
 
@@ -136,7 +137,7 @@ impl Client {
         loop {
             // decide whether to announce or not, based on time since last time
             let should_announce = {
-                let state = torrent.announce_state.read().await;
+                let state = torrent.announce_state.read();
                 if let Some(last_time) = state.last_time {
                     let min_interval = if let Some(last_announce) = &state.last_announce {
                         max(
@@ -174,7 +175,7 @@ impl Client {
                 if crate::DEBUG {
                     println!("[debug] announcing...");
                 }
-                let mut state = torrent.announce_state.write().await;
+                let mut state = torrent.announce_state.write();
                 let tracker_id = if let Some(last_announce) = &state.last_announce {
                     last_announce.tracker_id.as_deref()
                 } else {
@@ -182,20 +183,24 @@ impl Client {
                 };
                 match tracker_client.announce(&torrent, tracker_id).await {
                     Ok(announce) => {
-                        let mut peers: Vec<Peer> = announce
-                            .peers
-                            .iter()
-                            .map(|peer| Peer::new(peer.clone(), torrent.clone()))
-                            .collect();
-
-                        peers.shuffle(&mut rand::thread_rng());
-                        torrent.append_peers(peers).await;
-                        if crate::DEBUG {
-                            print_peers(&torrent.peers).await;
+                        let mut new_peers: Vec<PeerInfo> = Vec::new();
+                        for peer_info in announce.peers.clone() {
+                            torrent.peers.upsert(peer_info, || {
+                                new_peers.push(peer_info);
+                                Peer::new(peer_info, torrent.metainfo.info_hash, self.clone())
+                            }, |_| ());
                         }
 
                         state.last_announce = Some(announce);
                         state.last_time = Some(Utc::now());
+
+                        // connect to and handshake with new peers
+                        println!("[debug] new peers:");
+                        for peer_info in new_peers {
+                            println!("- {}", &peer_info);
+                            task::spawn(self.clone().connect_and_run_event_loop(torrent.metainfo.info_hash, peer_info));
+                        }
+                        println!(" ");
                     }
                     Err(e) => {
                         if crate::DEBUG {
@@ -205,12 +210,95 @@ impl Client {
                 }
             }
 
-            // connect to and handshake with new peers
-            for peer in torrent.peers.read().await.iter() {
-                task::spawn(peer.clone().connect_and_run_event_loop());
-            }
-
             sleep(Duration::from_secs(10)).await;
         }
+    }
+
+    pub async fn connect_and_run_event_loop(self: Arc<Self>, info_hash: [u8; 20], peer_info: PeerInfo) {
+        let torrent = match self.torrents.get(&info_hash) {
+            Some(torrent) => torrent,
+            None => {
+                if crate::DEBUG {
+                    println!("[debug] torrent not found in client");
+                }
+                return;
+            },
+        };
+        let peer = match torrent.peers.get(&peer_info) {
+            Some(peer) => peer,
+            None => {
+                if crate::DEBUG {
+                    println!("[debug] peer not found in torrent");
+                }
+                return;
+            },
+        };
+
+        match peer.connect().await {
+            Ok(()) => {
+                // handshake with peer
+                match peer.handshake(self.clone()).await {
+                    Ok(_) => {
+                        if crate::DEBUG {
+                            println!("[debug] connected to peer {}", &peer_info);
+                        }
+                        // torrent.active_peers.fetch_add(1, Ordering::SeqCst);
+
+                        // if we have some pieces, send bitfield
+                        let bitfield = torrent.pieces.as_bitfield();
+                        if !bitfield.is_all_clear() {
+                            if crate::DEBUG {
+                                println!(
+                                    "[debug] sending bitfield to peer {}: {:?}",
+                                    &peer_info, &bitfield
+                                );
+                            }
+                            match peer.write(Message::Bitfield(bitfield)).await {
+                                Ok(_) => {
+                                    match peer.run_event_loop(self.clone()).await {
+                                        Ok(_) => {
+                                            if crate::DEBUG {
+                                                println!("[debug] disconnected from peer {}", &peer_info);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            if crate::DEBUG {
+                                                println!(
+                                                    "[debug] disconnected from peer {}: {:?}",
+                                                    &peer_info, e
+                                                );
+                                            }
+                                        }
+                                    };
+                                }
+                                Err(e) => {
+                                    println!(
+                                        "[warning] unable to send our bitfield to peer {}: {}",
+                                        &peer_info, e
+                                    );
+                                }
+                            }
+                        }
+
+                        // torrent.active_peers.fetch_sub(1, Ordering::SeqCst);
+                        let _ = torrent.pieces.decrease_availability(&peer.bitfield).await;
+                    }
+                    Err(e) => {
+                        println!(
+                            "[warning] unable to handshake with peer {}: {}",
+                            &peer_info, e
+                        );
+                    }
+                }
+            },
+            Err(e) => {
+                if crate::DEBUG {
+                    println!("[debug] error connecting to peer {}: {}", &peer_info, e);
+                }
+            }
+        }
+
+        // remove peer when disconnected
+        torrent.peers.remove(&peer_info);
     }
 }
