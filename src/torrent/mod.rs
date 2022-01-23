@@ -6,18 +6,21 @@ use piece::PieceStore;
 
 use crate::error::Error;
 use crate::http::{read_body, DualSchemeClient};
-use crate::peer::{proto::Handshake, Peer, PeerInfo, Peers};
+use crate::peer::{Peer, PeerInfo, Peers};
+use crate::peer::proto::Handshake;
 use crate::tracker::announce::Announce;
+use crate::skip_wrap_vec::SkipWrapVec;
 
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use rand::seq::SliceRandom;
 use tokio::fs;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 
 use std::convert::TryInto;
 use std::default::Default;
-use std::sync::{atomic::AtomicUsize, Arc};
+use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum TorrentStatus {
@@ -43,7 +46,7 @@ pub struct Torrent {
     // pub active_peers: AtomicUsize,
     pub pieces: PieceStore,
     pub metainfo: Metainfo,
-    pub announce: Arc<Vec<Mutex<Vec<String>>>>,
+    pub announce: Vec<SkipWrapVec<String>>,
     pub announce_state: RwLock<TorrentAnnounceState>,
     pub handshake: Handshake,
 }
@@ -53,7 +56,7 @@ impl Torrent {
         // prepare announce list
         let mut announce = metainfo.announce.clone();
         announce.shuffle(&mut rand::thread_rng());
-        let announce = Arc::new(announce.into_iter().map(Mutex::new).collect());
+        let announce = announce.into_iter().map(SkipWrapVec::from).collect();
 
         // prepare handshake
         let handshake = Handshake::new(&metainfo.info_hash, local_peer.id.as_ref().unwrap());

@@ -6,23 +6,22 @@ pub mod bytesize;
 pub mod http;
 pub mod resolver;
 pub mod torrent;
+pub mod peer;
+pub mod cli;
+pub mod skip_wrap_vec;
 
 pub mod tracker;
 use tracker::{TrackerHttpServer, TrackerServerOptions};
 
-pub mod peer;
-
 pub mod error;
 use error::Error;
-
-use std::default::Default;
 
 pub mod client;
 use client::{Client, ClientOptions};
 
-pub const DEBUG: bool = true;
+use std::default::Default;
 
-pub mod cli;
+pub const DEBUG: bool = true;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {

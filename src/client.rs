@@ -1,4 +1,4 @@
-use tokio::{task, sync::Mutex};
+use tokio::task;
 use tokio::time::sleep;
 
 use crate::resolver;
@@ -121,7 +121,7 @@ impl Client {
 
         // replace announce list if tracker specified
         if let Some(tracker) = &self.opts.tracker {
-            torrent.announce = Arc::new(vec![Mutex::new(vec![tracker.clone()])]);
+            torrent.announce = vec![vec![tracker.clone()].into()];
         }
 
         // wrap Torrent in Arc
@@ -134,6 +134,7 @@ impl Client {
         // attempts to establish more peer connections, if more peers are available
         // and we have less peers than desired
         loop {
+            // decide whether to announce or not, based on time since last time
             let should_announce = {
                 let state = torrent.announce_state.read().await;
                 if let Some(last_time) = state.last_time {

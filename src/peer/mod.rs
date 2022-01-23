@@ -425,7 +425,9 @@ impl Peer {
                 };
             }
 
-            // TODO: choke/unchoke peer
+            // TODO: choke/unchoke peer here, but make the decision elsewhere(?)
+            // need to implement a choking/unchoking algorithm
+
             // TODO: implement disconnect: return Ok(state)
 
             if !self

@@ -210,13 +210,11 @@ impl<'a> TrackerClient<'a> {
         tracker_id: Option<&[u8]>,
     ) -> Result<Announce, Error> {
         let mut last_error: Option<Error> = None;
-        for tier_guard in torrent.announce.iter() {
-            let mut tier = tier_guard.lock().await;
-
+        for tier in &torrent.announce {
             // announce to endpoints in current tier, stop on first response
             let mut successful_endpoint_i: Option<usize> = None;
             let mut announce_response: Option<Announce> = None;
-            for (i, endpoint) in tier.iter().enumerate() {
+            for (i, endpoint) in tier.into_iter().enumerate() {
                 match self.try_announce(endpoint, torrent, tracker_id).await {
                     Ok(announce) => {
                         successful_endpoint_i = Some(i);
@@ -231,11 +229,7 @@ impl<'a> TrackerClient<'a> {
 
             // move last successful endpoint to start of tier
             if let Some(i) = successful_endpoint_i {
-                let mut new_tier = Vec::with_capacity(tier.len());
-                let successful_endpoint = tier.remove(i);
-                new_tier.push(successful_endpoint);
-                new_tier.append(&mut tier);
-                *tier = new_tier;
+                tier.set_first_item(i);
             }
 
             // return if announce was successful
