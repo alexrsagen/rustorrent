@@ -473,7 +473,6 @@ impl Peer {
                 // self.torrent.active_peers.fetch_add(1, Ordering::SeqCst);
 
                 // if we have some pieces, send bitfield
-                // TODO: implement Deluge-style lazy bitfield?
                 let bitfield = self.torrent.pieces.as_bitfield();
                 if !bitfield.is_all_clear() {
                     if crate::DEBUG {
