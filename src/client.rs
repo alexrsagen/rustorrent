@@ -134,40 +134,42 @@ impl Client {
         // attempts to establish more peer connections, if more peers are available
         // and we have less peers than desired
         loop {
-            let state = torrent.announce_state.read().await;
-            let min_interval = if let Some(last_announce) = &state.last_announce {
-                max(
-                    last_announce.min_interval.unwrap_or(self.opts.min_interval),
-                    self.opts.min_interval,
-                )
-            } else {
-                self.opts.min_interval
+            let should_announce = {
+                let state = torrent.announce_state.read().await;
+                if let Some(last_time) = state.last_time {
+                    let min_interval = if let Some(last_announce) = &state.last_announce {
+                        max(
+                            last_announce.min_interval.unwrap_or(self.opts.min_interval),
+                            self.opts.min_interval,
+                        )
+                    } else {
+                        self.opts.min_interval
+                    };
+                    let interval = if let Some(last_announce) = &state.last_announce {
+                        last_announce.interval
+                    } else {
+                        self.opts.default_interval
+                    };
+                    let interval = min(self.opts.max_interval, max(interval, min_interval));
+                    let now = Utc::now();
+                    let time_since_last_announce = (now - last_time).to_std().unwrap();
+                    if crate::DEBUG {
+                        println!(
+                            "[debug] time until next announce: {:?}",
+                            interval - time_since_last_announce
+                        );
+                    }
+                    time_since_last_announce >= interval
+                } else {
+                    // haven't announced yet, announce now
+                    true
+                }
             };
-            let interval = if let Some(last_announce) = &state.last_announce {
-                last_announce.interval
-            } else {
-                self.opts.default_interval
-            };
-            let interval = min(self.opts.max_interval, max(interval, min_interval));
-            let now = Utc::now();
-            let now_minus_interval = now
-                .checked_sub_signed(chrono::Duration::from_std(interval).unwrap())
-                .unwrap();
-            let last_announce = state.last_time.unwrap_or(now_minus_interval);
-            let time_since_last_announce = (now - last_announce).to_std().unwrap();
-            std::mem::drop(state);
-
-            if crate::DEBUG {
-                println!(
-                    "[debug] time until next announce: {:?}",
-                    interval - time_since_last_announce
-                );
-            }
 
             // perform announce, if needed
             // TODO: announce faster if we need new peers, due to snubbing or disconnections?
             // TODO: set larger num_want, so we can keep a cache of not-yet-attempted peers?
-            if time_since_last_announce >= interval {
+            if should_announce {
                 if crate::DEBUG {
                     println!("[debug] announcing...");
                 }
