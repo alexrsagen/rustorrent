@@ -252,63 +252,53 @@ impl PieceStore {
     }
 
     pub async fn pick_block(&self, peer: Arc<Peer>) -> Option<PieceBlockRequest> {
-        // get peer bitfield
-        let peer_bitfield_guard = peer.bitfield.read().await;
-        if peer_bitfield_guard.is_none() {
-            return None;
-        }
-        let peer_bitfield = peer_bitfield_guard.as_ref().unwrap();
         let piece_size = peer.torrent.metainfo.info.piece_length;
 
-        // pick first available piece in highest priority bucket.
-        // since each bucket has a random order, the piece will be random.
-        let pieces_by_priority = self.pieces_by_priority.read().await;
-        for bucket in pieces_by_priority.iter() {
-            for piece_index in bucket {
-                // skip piece if peer does not have it
-                if !peer_bitfield.get(*piece_index) {
-                    continue;
+        // get peer bitfield
+        if let Some(peer_bitfield) = peer.bitfield.read().await.as_ref() {
+            // pick first available piece in highest priority bucket.
+            // since each bucket has a random order, the piece will be random.
+            let pieces_by_priority = self.pieces_by_priority.read().await;
+            for bucket in pieces_by_priority.iter() {
+                for piece_index in bucket {
+                    // skip piece if peer does not have it
+                    if !peer_bitfield.get(*piece_index) {
+                        continue;
+                    }
+
+                    // find all the open blocks of the piece
+                    let mut blocks = self.pieces[*piece_index].blocks.lock().await;
+                    let open_blocks: Vec<usize> = blocks
+                        .iter()
+                        .enumerate()
+                        .filter(|&(_, block)| *block == PieceBlockState::Open)
+                        .map(|(i, _)| i)
+                        .collect();
+                    if open_blocks.is_empty() {
+                        continue;
+                    }
+
+                    // get a random open block
+                    let block_index = rand::thread_rng().gen_range(0..open_blocks.len());
+                    let block_begin = get_block_begin(self.block_size, block_index);
+                    let block_size = get_block_size(piece_size, self.block_size, block_index).unwrap();
+
+                    let req = PieceBlockRequest {
+                        picked_at: Utc::now(),
+                        request: Request {
+                            index: *piece_index as u32,
+                            begin: block_begin as u32,
+                            length: block_size as u32,
+                        },
+                        peer: peer.clone(),
+                    };
+
+                    // update block state
+                    blocks[block_index] = PieceBlockState::Requested(req.clone());
+                    return Some(req);
                 }
-
-                // find all the open blocks of the piece
-                let mut blocks = self.pieces[*piece_index].blocks.lock().await;
-                let open_blocks: Vec<usize> = blocks
-                    .iter()
-                    .enumerate()
-                    .filter(|&(_, block)| *block == PieceBlockState::Open)
-                    .map(|(i, _)| i)
-                    .collect();
-                if open_blocks.is_empty() {
-                    continue;
-                }
-
-                // get a random open block
-                let block_index = rand::thread_rng().gen_range(0..open_blocks.len());
-                let block_begin = get_block_begin(self.block_size, block_index);
-                let block_size = get_block_size(piece_size, self.block_size, block_index).unwrap();
-
-                // since we have decided on a piece/block,
-                // we no longer need a reference to the peer bitfield
-                // todo: dropping ref does nothing, we should not drop things manually.
-                std::mem::drop(peer_bitfield);
-                std::mem::drop(peer_bitfield_guard);
-
-                let req = PieceBlockRequest {
-                    picked_at: Utc::now(),
-                    request: Request {
-                        index: *piece_index as u32,
-                        begin: block_begin as u32,
-                        length: block_size as u32,
-                    },
-                    peer,
-                };
-
-                // update block state
-                blocks[block_index] = PieceBlockState::Requested(req.clone());
-                return Some(req);
             }
         }
-
         None
     }
 }
