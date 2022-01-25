@@ -1,4 +1,4 @@
-use crate::resolver;
+use crate::{resolver, torrent::TorrentAnnounceState};
 use crate::http::DualSchemeClient;
 use crate::tracker::{TrackerClient, TrackerClientOptions};
 use crate::peer::{Peer, PeerInfo, PortRange};
@@ -12,7 +12,7 @@ use tokio::task;
 use tokio::time::sleep;
 use chrono::Utc;
 
-use std::cmp::{max, min};
+use std::{cmp::{max, min}, collections::HashMap};
 use std::default::Default;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
@@ -134,10 +134,16 @@ impl Client {
         // announce / peer select loop, which repeatedly announces and
         // attempts to establish more peer connections, if more peers are available
         // and we have less peers than desired
+        let mut announce_states: HashMap<[u8; 20], TorrentAnnounceState> = HashMap::new();
+        announce_states.insert(torrent.metainfo.info_hash, TorrentAnnounceState::default());
         loop {
+            let state = match announce_states.get_mut(&torrent.metainfo.info_hash) {
+                Some(state) => state,
+                None => return Err(Error::InfoHashInvalid),
+            };
+
             // decide whether to announce or not, based on time since last time
             let should_announce = {
-                let state = torrent.announce_state.read();
                 if let Some(last_time) = state.last_time {
                     let min_interval = if let Some(last_announce) = &state.last_announce {
                         max(
@@ -175,7 +181,6 @@ impl Client {
                 if crate::DEBUG {
                     println!("[debug] announcing...");
                 }
-                let mut state = torrent.announce_state.write();
                 let tracker_id = if let Some(last_announce) = &state.last_announce {
                     last_announce.tracker_id.as_deref()
                 } else {

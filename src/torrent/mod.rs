@@ -15,7 +15,6 @@ use crate::skip_wrap_vec::SkipWrapVec;
 use chrono::{DateTime, Utc};
 use rand::seq::SliceRandom;
 use tokio::fs;
-use parking_lot::RwLock;
 
 use std::convert::TryInto;
 use std::default::Default;
@@ -46,7 +45,6 @@ pub struct Torrent {
     pub pieces: PieceStore,
     pub metainfo: Metainfo,
     pub announce: Vec<SkipWrapVec<String>>,
-    pub announce_state: RwLock<TorrentAnnounceState>, // TODO: eliminate mutex
     pub handshake: Handshake,
 }
 
@@ -73,7 +71,6 @@ impl Torrent {
             pieces: PieceStore::new(piece_count, piece_size, block_size),
             metainfo,
             announce,
-            announce_state: Default::default(),
             handshake,
         }
     }
