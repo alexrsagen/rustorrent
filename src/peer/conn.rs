@@ -1,15 +1,25 @@
+use super::info::PeerInfo;
 use super::proto::{Handshake, Message};
 use crate::error::Error;
+use crate::client::Client;
 
 use chrono::{DateTime, Utc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::{TcpSocket, TcpStream};
 use tokio::time::timeout;
 
+use std::sync::Arc;
 use std::convert::TryInto;
 use std::default::Default;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
+
+#[derive(Debug)]
+pub enum EventLoopError {
+    ConnectionError(Error),
+    ReadError(Error),
+    WriteError(Error),
+}
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct PeerConnOptions {
@@ -61,51 +71,49 @@ impl Default for PeerConnState {
 pub struct PeerConn {
     pub opts: PeerConnOptions,
     pub state: PeerConnState,
+    info: PeerInfo,
+    info_hash: [u8; 20],
     rx: BufReader<tokio::net::tcp::OwnedReadHalf>,
     tx: BufWriter<tokio::net::tcp::OwnedWriteHalf>,
     last_rx: Option<DateTime<Utc>>,
     last_tx: Option<DateTime<Utc>>,
 }
 
-impl From<TcpStream> for PeerConn {
-    fn from(stream: TcpStream) -> Self {
-        Self::new(stream)
-    }
-}
-
 impl PeerConn {
-    pub async fn connect(addr: SocketAddr) -> Result<Self, Error> {
-        Self::connect_with_opts(addr, PeerConnOptions::default()).await
+    pub async fn connect(info: PeerInfo, info_hash: [u8; 20]) -> Result<Self, Error> {
+        Self::connect_with_opts(info, info_hash, PeerConnOptions::default()).await
     }
 
-    pub async fn connect_with_opts(addr: SocketAddr, opts: PeerConnOptions) -> Result<Self, Error> {
+    pub async fn connect_with_opts(info: PeerInfo, info_hash: [u8; 20], opts: PeerConnOptions) -> Result<Self, Error> {
         let socket = match opts.addr.ip() {
             IpAddr::V4(_) => TcpSocket::new_v4()?,
             IpAddr::V6(_) => TcpSocket::new_v6()?,
         };
         socket.bind(opts.addr)?;
-        let future = socket.connect(addr);
+        let future = socket.connect(info.addr);
         let stream = if let Some(connect_timeout) = opts.connect_timeout {
             timeout(connect_timeout, future).await??
         } else {
             future.await?
         };
-        Ok(Self::new_with_opts(stream, opts))
+        Ok(Self::new_with_opts(stream, info, info_hash, opts))
     }
 
-    pub fn new(stream: TcpStream) -> Self {
-        Self::new_with_opts(stream, PeerConnOptions::default())
+    pub fn new(stream: TcpStream, info: PeerInfo, info_hash: [u8; 20]) -> Self {
+        Self::new_with_opts(stream, info, info_hash, PeerConnOptions::default())
     }
 
-    pub fn new_with_opts(stream: TcpStream, opts: PeerConnOptions) -> Self {
+    pub fn new_with_opts(stream: TcpStream, info: PeerInfo, info_hash: [u8; 20], opts: PeerConnOptions) -> Self {
         let (rx, tx) = stream.into_split();
         Self {
             opts,
+            state: PeerConnState::default(),
+            info,
+            info_hash,
             rx: BufReader::with_capacity(opts.max_rx_len, rx),
             tx: BufWriter::new(tx),
             last_rx: None,
             last_tx: None,
-            state: PeerConnState::default(),
         }
     }
 
@@ -195,6 +203,305 @@ impl PeerConn {
             (now - last_tx).to_std().unwrap_or_default()
         } else {
             Duration::new(0, 0)
+        }
+    }
+
+    pub async fn handshake(&mut self, client: Arc<Client>) -> Result<(), Error> {
+        let torrent = match client.torrents.get(&self.info_hash) {
+            Some(torrent) => torrent,
+            None => return Err(Error::InfoHashInvalid),
+        };
+        self.write_handshake(&torrent.handshake).await?;
+        self.flush().await?;
+        let handshake = self.read_handshake().await?;
+        // check peer_id against known value, if known
+        if let Some(peer_id) = self.info.id {
+            if handshake.peer_id != peer_id {
+                return Err(Error::PeerIdInvalid);
+            }
+        }
+        // check info_hash against known value
+        if handshake.info_hash != torrent.metainfo.info_hash {
+            return Err(Error::InfoHashInvalid);
+        }
+        Ok(())
+    }
+
+    // only returns Ok(m) where m:
+    // - Message::Request(_)
+    // - Message::Piece(_)
+    // - Message::Cancel(_)
+    // - Message::Port(_)
+    // otherwise, returns Error::MessageHandled
+    pub async fn read(&mut self, client: Arc<Client>) -> Result<Message, Error> {
+        let torrent = match client.torrents.get(&self.info_hash) {
+            Some(torrent) => torrent,
+            None => return Err(Error::InfoHashInvalid),
+        };
+        let peer_bitfield = match torrent.peer_bitfields.get(&self.info) {
+            Some(peer_bitfield) => peer_bitfield,
+            None => return Err(Error::InfoHashInvalid),
+        };
+        let msg = self.read_msg().await?;
+        self.state.rx_msg_count += 1;
+        match msg {
+            Message::InvalidId => Err(Error::MessageIdInvalid),
+            Message::InvalidLength => Err(Error::MessageLengthInvalid),
+            Message::Keepalive => Err(Error::MessageHandled),
+            Message::Choke => {
+                if crate::DEBUG {
+                    println!("[debug] peer {} is choking", &self.info);
+                }
+                self.state.peer_choking = true;
+                Err(Error::MessageHandled)
+            }
+            Message::Unchoke => {
+                if crate::DEBUG {
+                    println!("[debug] peer {} no longer choking", &self.info);
+                }
+                self.state.peer_choking = false;
+                Err(Error::MessageHandled)
+            }
+            Message::Interested => {
+                if crate::DEBUG {
+                    println!("[debug] peer {} is interested", &self.info);
+                }
+                self.state.peer_interested = true;
+                Err(Error::MessageHandled)
+            }
+            Message::NotInterested => {
+                if crate::DEBUG {
+                    println!("[debug] peer {} is no longer interested", &self.info);
+                }
+                self.state.peer_interested = false;
+                Err(Error::MessageHandled)
+            }
+            Message::Have(index) => {
+                if crate::DEBUG {
+                    println!("[debug] peer {} has piece {}", &self.info, index);
+                }
+                peer_bitfield.set_bit(index as usize);
+                torrent.pieces.increase_availability(&peer_bitfield).await?;
+                Err(Error::MessageHandled)
+            }
+            Message::Bitfield(mut bitfield) => {
+                if self.state.rx_msg_count != 1 {
+                    return Err(Error::UnexpectedOrInvalidBitfield);
+                }
+                bitfield.resize(torrent.metainfo.info.piece_hashes.len());
+                if bitfield.spare_bits_as_byte() != 0 {
+                    return Err(Error::UnexpectedOrInvalidBitfield);
+                }
+                if crate::DEBUG {
+                    println!("[debug] peer {} sent {:?}", &self.info, &bitfield);
+                }
+                torrent.pieces.increase_availability(&bitfield).await?;
+                peer_bitfield.try_overwrite_with(&bitfield)?;
+                Err(Error::MessageHandled)
+            }
+            Message::Piece(block) => {
+                torrent
+                    .pieces
+                    .write_block(client.clone(), &self.info, &self.info_hash, block)
+                    .await?;
+                Err(Error::MessageHandled)
+            }
+            Message::Request(request) => {
+                if crate::DEBUG {
+                    println!(
+                        "[debug] peer {} requested block of piece {} (offset {}, length {})",
+                        &self.info, request.index, request.begin, request.length
+                    );
+                }
+                if self.state.am_choking {
+                    // TODO: ignore piece request
+                } else {
+                    // TODO: handle piece request
+                }
+                Err(Error::MessageHandled)
+            }
+            Message::Cancel(request) => {
+                if crate::DEBUG {
+                    println!("[debug] peer {} cancelled request for block of piece {} (offset {}, length {})", &self.info, request.index, request.begin, request.length);
+                }
+                if self.state.am_choking {
+                    // TODO: ignore piece cancel request
+                } else {
+                    // TODO: handle piece cancel request
+                }
+                Err(Error::MessageHandled)
+            }
+            msg => Ok(msg),
+        }
+    }
+
+    pub async fn write(&mut self, msg: Message) -> Result<(), Error> {
+        let mut am_choking = self.state.am_choking;
+        let mut am_interested = self.state.am_interested;
+        match &msg {
+            Message::Choke => {
+                if am_choking {
+                    return Err(Error::NoOp);
+                }
+                am_choking = true;
+            }
+            Message::Unchoke => {
+                if !am_choking {
+                    return Err(Error::NoOp);
+                }
+                am_choking = false;
+            }
+            Message::Interested => {
+                if am_interested {
+                    return Err(Error::NoOp);
+                }
+                am_interested = true;
+            }
+            Message::NotInterested => {
+                if !am_interested {
+                    return Err(Error::NoOp);
+                }
+                am_interested = false;
+            }
+            Message::Request(_) => {
+                if self.state.peer_choking {
+                    return Err(Error::PeerChoking);
+                }
+            }
+            Message::Cancel(_) => {
+                if self.state.peer_choking {
+                    return Err(Error::PeerChoking);
+                }
+            }
+            _ => {}
+        }
+        self.write_msg(msg).await?;
+        self.state.tx_msg_count += 1;
+        self.state.am_choking = am_choking;
+        self.state.am_interested = am_interested;
+        Ok(())
+    }
+
+    pub async fn keepalive(&mut self) -> Result<(), Error> {
+        let keepalive_interval = self.opts.keepalive_interval - self.opts.tx_timeout.unwrap_or(Duration::from_secs(5));
+        if self.duration_since_last_tx() > keepalive_interval {
+            self.write(Message::Keepalive).await
+        } else {
+            Ok(())
+        }
+    }
+
+    pub async fn run_event_loop(&mut self, client: Arc<Client>) -> Result<(), EventLoopError> {
+        let torrent = match client.torrents.get(&self.info_hash) {
+            Some(torrent) => torrent,
+            None => return Err(EventLoopError::ConnectionError(Error::InfoHashInvalid)),
+        };
+        let peer_bitfield = match torrent.peer_bitfields.get(&self.info) {
+            Some(peer_bitfield) => peer_bitfield,
+            None => return Err(EventLoopError::ConnectionError(Error::InfoHashInvalid)),
+        };
+        // run event loop
+        loop {
+            if crate::DEBUG {
+                println!("[debug] polling for peer {} message...", &self.info);
+            }
+            match self.read(client.clone()).await {
+                Ok(msg) => {
+                    match msg {
+                        Message::Port(dht_port) => {
+                            if crate::DEBUG {
+                                println!(
+                                    "[debug] peer {} sent DHT port: {:?}",
+                                    &self.info, dht_port
+                                );
+                            }
+                            // TODO: DHT related, insert peer into "local routing table"
+                        }
+                        msg => {
+                            if crate::DEBUG {
+                                println!(
+                                    "[debug] peer {} sent unhandled message: {:?}",
+                                    &self.info, msg
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(Error::Timeout(_)) => {}
+                Err(Error::MessageHandled) => {}
+                Err(Error::UnsolicitedPieceBlockMessage {
+                    piece_index,
+                    block_index,
+                }) => {
+                    println!(
+                        "[warning] peer {} sent unsolicited block {} of piece {}",
+                        &self.info, block_index, piece_index
+                    );
+                }
+                Err(Error::InvalidPieceBlockMessage {
+                    piece_index,
+                    block_index,
+                }) => {
+                    println!("[warning] peer {} sent invalid block {} of piece {} (wrong begin or length)", &self.info, block_index, piece_index);
+                }
+                Err(Error::PieceHashInvalid { piece_index }) => {
+                    println!(
+                        "[warning] piece {} could not be verified and will be re-downloaded",
+                        piece_index
+                    );
+                }
+                Err(e) => return Err(EventLoopError::ReadError(e)),
+            }
+
+            // update interested state by comparing peer bitfield with torrent bitfield
+            let bitfield = torrent.pieces.as_bitfield();
+            let bitfield_interesting = peer_bitfield.except(&bitfield);
+            let msg_interest = if bitfield_interesting.is_all_clear() {
+                Message::NotInterested
+            } else {
+                Message::Interested
+            };
+            // send message (NoOp = already same state)
+            if crate::DEBUG {
+                println!(
+                    "[debug] updating peer {} interest: {:?}",
+                    &self.info, &msg_interest
+                );
+            }
+            match self.write(msg_interest).await {
+                Ok(_) => {}
+                Err(Error::NoOp) => {}
+                Err(e) => return Err(EventLoopError::WriteError(e)),
+            }
+
+            // TODO: choke/unchoke peer here, but make the decision elsewhere(?)
+            // need to implement a choking/unchoking algorithm
+
+            // TODO: implement disconnect: return Ok(state)
+
+            if !self.state.peer_choking {
+                // TODO: request pieces from peer
+                // TODO: - pipelining and adaptive queueing (https://luminarys.com/posts/writing-a-bittorrent-client.html)
+                // match self.write(Message::Request(req.clone())).await {
+                // 	Ok(_) => {
+                // 		// self.requests.push(req);
+                // 	},
+                // 	Err(e) => {
+                // 		self.peer.torrent.req_queue.push(req);
+                // 		return Err(EventLoopError::WriteError(e))
+                // 	},
+                // }
+            }
+
+            // keep connection alive
+            self.keepalive()
+                .await
+                .map_err(|e| EventLoopError::WriteError(e))?;
+
+            // flush all messages to peer
+            self.flush().await.map_err(|e| EventLoopError::WriteError(e))?;
+
+            // TODO: find and cancel timed out requests
         }
     }
 }

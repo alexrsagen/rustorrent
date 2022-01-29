@@ -1,11 +1,12 @@
 use crate::error::Error;
 use crate::http::DualSchemeClient;
 use crate::peer::proto::Message;
-use crate::peer::{Peer, PeerInfo, PortRange};
+use crate::peer::{PeerInfo, PeerConn, PortRange};
 use crate::torrent::metainfo::{Files, Metainfo};
-use crate::torrent::Torrent;
+use crate::torrent::{Torrent, TorrentAnnounceState};
 use crate::tracker::{TrackerClient, TrackerClientOptions};
-use crate::{resolver, torrent::TorrentAnnounceState};
+use crate::bitfield::Bitfield;
+use crate::resolver;
 
 use chashmap::CHashMap;
 use chrono::Utc;
@@ -17,10 +18,8 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use std::{
-    cmp::{max, min},
-    collections::HashMap,
-};
+use std::cmp::{max, min};
+use std::collections::HashMap;
 
 fn print_metainfo_files(metainfo: &Metainfo) {
     println!("[debug] torrent files:");
@@ -196,11 +195,11 @@ impl Client {
                     Ok(announce) => {
                         let mut new_peers: Vec<PeerInfo> = Vec::new();
                         for peer_info in announce.peers.clone() {
-                            torrent.peers.upsert(
+                            torrent.peer_bitfields.upsert(
                                 peer_info,
                                 || {
                                     new_peers.push(peer_info);
-                                    Peer::new(peer_info, torrent.metainfo.info_hash, self.clone())
+                                    Bitfield::new(torrent.metainfo.info.piece_hashes.len())
                                 },
                                 |_| (),
                             );
@@ -215,8 +214,8 @@ impl Client {
                             println!("- {}", &peer_info);
                             task::spawn(
                                 self.clone().connect_and_run_event_loop(
-                                    torrent.metainfo.info_hash,
                                     peer_info,
+                                    torrent.metainfo.info_hash,
                                 ),
                             );
                         }
@@ -236,8 +235,8 @@ impl Client {
 
     pub async fn connect_and_run_event_loop(
         self: Arc<Self>,
-        info_hash: [u8; 20],
         peer_info: PeerInfo,
+        info_hash: [u8; 20],
     ) {
         let torrent = match self.torrents.get(&info_hash) {
             Some(torrent) => torrent,
@@ -248,20 +247,20 @@ impl Client {
                 return;
             }
         };
-        let peer = match torrent.peers.get(&peer_info) {
-            Some(peer) => peer,
+        let peer_bitfield = match torrent.peer_bitfields.get(&peer_info) {
+            Some(peer_bitfield) => peer_bitfield,
             None => {
                 if crate::DEBUG {
-                    println!("[debug] peer not found in torrent");
+                    println!("[debug] torrent not found in client");
                 }
                 return;
-            }
+            },
         };
 
-        match peer.connect().await {
-            Ok(()) => {
+        match PeerConn::connect(peer_info, info_hash).await {
+            Ok(mut conn) => {
                 // handshake with peer
-                match peer.handshake(self.clone()).await {
+                match conn.handshake(self.clone()).await {
                     Ok(_) => {
                         if crate::DEBUG {
                             println!("[debug] connected to peer {}", &peer_info);
@@ -277,9 +276,9 @@ impl Client {
                                     &peer_info, &bitfield
                                 );
                             }
-                            match peer.write(Message::Bitfield(bitfield)).await {
+                            match conn.write(Message::Bitfield(bitfield)).await {
                                 Ok(_) => {
-                                    match peer.run_event_loop(self.clone()).await {
+                                    match conn.run_event_loop(self.clone()).await {
                                         Ok(_) => {
                                             if crate::DEBUG {
                                                 println!(
@@ -308,7 +307,7 @@ impl Client {
                         }
 
                         // torrent.active_peers.fetch_sub(1, Ordering::SeqCst);
-                        let _ = torrent.pieces.decrease_availability(&peer.bitfield).await;
+                        let _ = torrent.pieces.decrease_availability(&peer_bitfield).await;
                     }
                     Err(e) => {
                         println!(
@@ -325,7 +324,7 @@ impl Client {
             }
         }
 
-        // remove peer when disconnected
-        torrent.peers.remove(&peer_info);
+        // remove peer bitfield when disconnected
+        torrent.peer_bitfields.remove(&peer_info);
     }
 }

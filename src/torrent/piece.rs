@@ -2,7 +2,7 @@ use crate::bitfield::Bitfield;
 use crate::client::Client;
 use crate::error::Error;
 use crate::peer::proto::{PieceBlock, Request};
-use crate::peer::{Peer, PeerInfo};
+use crate::peer::PeerInfo;
 
 use crossbeam_utils::atomic::AtomicCell;
 use parking_lot::RwLock;
@@ -225,8 +225,9 @@ impl PieceStore {
 
     pub async fn write_block(
         &self,
-        peer: &Peer,
         client: Arc<Client>,
+        info: &PeerInfo,
+        info_hash: &[u8; 20],
         block: PieceBlock,
     ) -> Result<(), Error> {
         let piece_index = block.index as usize;
@@ -235,7 +236,7 @@ impl PieceStore {
         }
         let piece = &self.pieces[piece_index];
         piece
-            .write_block(peer, client, block, self.block_size)
+            .write_block(client, info, info_hash, block, self.block_size)
             .await?;
         // check for complete (verified) piece
         if piece.state.load() == PieceState::Complete {
@@ -257,11 +258,16 @@ impl PieceStore {
 
     pub async fn pick_block(
         &self,
-        peer: Arc<Peer>,
         client: Arc<Client>,
+        info: &PeerInfo,
+        info_hash: &[u8; 20],
     ) -> Option<PieceBlockRequest> {
-        let torrent = match client.torrents.get(&peer.info_hash) {
+        let torrent = match client.torrents.get(info_hash) {
             Some(torrent) => torrent,
+            None => return None,
+        };
+        let peer_bitfield = match torrent.peer_bitfields.get(info) {
+            Some(peer_bitfield) => peer_bitfield,
             None => return None,
         };
         let piece_size = torrent.metainfo.info.piece_length;
@@ -272,7 +278,7 @@ impl PieceStore {
         for bucket in pieces_by_priority.iter() {
             for piece_index in bucket {
                 // skip piece if peer does not have it
-                if !peer.bitfield.get(*piece_index) {
+                if !peer_bitfield.get(*piece_index) {
                     continue;
                 }
 
@@ -301,7 +307,7 @@ impl PieceStore {
                         begin: block_begin as u32,
                         length: block_size as u32,
                     },
-                    peer_info: peer.info,
+                    peer_info: info.clone(),
                 };
 
                 // update block state
@@ -404,12 +410,13 @@ impl Piece {
 
     async fn write_block(
         &self,
-        peer: &Peer,
         client: Arc<Client>,
+        info: &PeerInfo,
+        info_hash: &[u8; 20],
         block: PieceBlock,
         block_size: usize,
     ) -> Result<(), Error> {
-        let torrent = match client.torrents.get(&peer.info_hash) {
+        let torrent = match client.torrents.get(info_hash) {
             Some(torrent) => torrent,
             None => return Err(Error::InfoHashInvalid),
         };
@@ -441,7 +448,7 @@ impl Piece {
 
         // get block state
         if let PieceBlockState::Requested(req) = &self.blocks[block_index].load() {
-            if peer.info != req.peer_info {
+            if info != &req.peer_info {
                 return Err(Error::UnsolicitedPieceBlockMessage {
                     piece_index,
                     block_index,

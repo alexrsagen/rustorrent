@@ -92,7 +92,7 @@ impl DualSchemeClient {
                 _ => Err(Error::ProtoInvalid(InvalidProto::Http(HttpProto::Other(
                     String::from(scheme),
                 )))),
-            },
+            }
             None => Err(Error::ProtoInvalid(InvalidProto::Http(HttpProto::Unknown))),
         }
     }
@@ -127,7 +127,7 @@ impl DualSchemeClient {
                         last_error = Some(e.into());
                         continue;
                     }
-                },
+                }
                 Err(e) => last_error = Some(e),
             }
         }
@@ -147,7 +147,7 @@ impl DualSchemeClient {
                         last_error = Some(e.into());
                         continue;
                     }
-                },
+                }
                 Err(e) => last_error = Some(e),
             }
         }

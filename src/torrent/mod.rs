@@ -8,9 +8,10 @@ use piece::PieceStore;
 use crate::error::Error;
 use crate::http::{read_body, DualSchemeClient};
 use crate::peer::proto::Handshake;
-use crate::peer::{Peer, PeerInfo};
+use crate::peer::PeerInfo;
 use crate::skip_wrap_vec::SkipWrapVec;
 use crate::tracker::announce::Announce;
+use crate::bitfield::Bitfield;
 
 use chrono::{DateTime, Utc};
 use rand::seq::SliceRandom;
@@ -39,7 +40,7 @@ pub struct Torrent {
     pub downloaded: AtomicUsize,
     pub status: TorrentStatus,
     pub paused: bool,
-    pub peers: CHashMap<PeerInfo, Peer>,
+    pub peer_bitfields: CHashMap<PeerInfo, Bitfield>,
     // pub active_peers: AtomicUsize,
     pub pieces: PieceStore,
     pub metainfo: Metainfo,
@@ -65,7 +66,7 @@ impl Torrent {
             downloaded: AtomicUsize::new(0),
             status: TorrentStatus::Queued,
             paused: false,
-            peers: CHashMap::new(),
+            peer_bitfields: CHashMap::new(),
             // active_peers: AtomicUsize::new(0),
             pieces: PieceStore::new(piece_count, piece_size, block_size),
             metainfo,
