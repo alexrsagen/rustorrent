@@ -76,7 +76,9 @@ impl Bitfield {
     pub fn new(bits: usize) -> Self {
         let len = bits_to_bytes(bits);
         Self {
-            data: std::iter::repeat_with(|| AtomicU8::new(0)).take(len).collect(),
+            data: std::iter::repeat_with(|| AtomicU8::new(0))
+                .take(len)
+                .collect(),
             bits,
         }
     }
@@ -97,7 +99,10 @@ impl Bitfield {
     }
 
     pub fn to_vec(&self) -> Vec<u8> {
-        self.data.iter().map(|byte| byte.load(Ordering::SeqCst)).collect()
+        self.data
+            .iter()
+            .map(|byte| byte.load(Ordering::SeqCst))
+            .collect()
     }
 
     pub fn len(&self) -> usize {

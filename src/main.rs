@@ -3,12 +3,12 @@ use structopt::StructOpt;
 pub mod bencode;
 pub mod bitfield;
 pub mod bytesize;
-pub mod http;
-pub mod resolver;
-pub mod torrent;
-pub mod peer;
 pub mod cli;
+pub mod http;
+pub mod peer;
+pub mod resolver;
 pub mod skip_wrap_vec;
+pub mod torrent;
 
 pub mod tracker;
 use tracker::{TrackerHttpServer, TrackerServerOptions};

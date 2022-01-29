@@ -1,5 +1,5 @@
+use super::proto::{Handshake, Message};
 use crate::error::Error;
-use crate::peer::proto::{Handshake, Message};
 
 use chrono::{DateTime, Utc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};

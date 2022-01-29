@@ -1,6 +1,6 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::iter::Chain;
 use std::slice::Iter;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug, Default)]
 pub struct SkipWrapVec<T> {
@@ -20,7 +20,10 @@ impl<T> SkipWrapVec<T> {
 
 impl<T> From<Vec<T>> for SkipWrapVec<T> {
     fn from(buf: Vec<T>) -> Self {
-        Self { buf, start: AtomicUsize::new(0) }
+        Self {
+            buf,
+            start: AtomicUsize::new(0),
+        }
     }
 }
 
@@ -30,7 +33,7 @@ impl<'a, T> IntoIterator for &'a SkipWrapVec<T> {
 
     fn into_iter(self) -> Self::IntoIter {
         let start = self.start.load(Ordering::Relaxed);
-		let (first, second) = self.buf.split_at(start);
-		second.iter().chain(first.iter())
+        let (first, second) = self.buf.split_at(start);
+        second.iter().chain(first.iter())
     }
 }

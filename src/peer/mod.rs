@@ -16,8 +16,8 @@ use crate::error::Error;
 
 use tokio::sync::Mutex;
 
-use std::time::Duration;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Debug)]
 pub enum PeerError {
@@ -39,7 +39,7 @@ impl Peer {
         let torrent = client.torrents.get(&info_hash);
         let bitfield = match torrent {
             Some(torrent) => Bitfield::new(torrent.metainfo.info.piece_hashes.len()),
-            None => Bitfield::new(0)
+            None => Bitfield::new(0),
         };
         Self {
             info,
@@ -170,7 +170,10 @@ impl Peer {
                 Err(Error::MessageHandled)
             }
             Message::Piece(block) => {
-                torrent.pieces.write_block(&self, client.clone(), block).await?;
+                torrent
+                    .pieces
+                    .write_block(&self, client.clone(), block)
+                    .await?;
                 Err(Error::MessageHandled)
             }
             Message::Request(request) => {
@@ -261,8 +264,8 @@ impl Peer {
                 return Err(Error::NotConnected);
             }
             let conn = guard.as_mut().unwrap();
-            let keepalive_interval =
-                conn.opts.keepalive_interval - conn.opts.tx_timeout.unwrap_or(Duration::from_secs(5));
+            let keepalive_interval = conn.opts.keepalive_interval
+                - conn.opts.tx_timeout.unwrap_or(Duration::from_secs(5));
             conn.duration_since_last_tx() > keepalive_interval
         };
         if keepalive_interval_passed {
@@ -362,8 +365,7 @@ impl Peer {
                 );
             }
             match self.write(msg_interest).await {
-                Ok(_) => {
-                }
+                Ok(_) => {}
                 Err(Error::NoOp) => {}
                 Err(e) => return Err(PeerError::WriteError(e)),
             }

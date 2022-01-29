@@ -25,7 +25,6 @@ hyper = { version = "0.14", features = ["client", "server", "tcp", "stream", "ht
 hyper-rustls = { version = "0.23", features = ["webpki-tokio"] }
 trust-dns-resolver = { version = "0.20.3", features = ["dns-over-https-rustls"] }
 async-compression = { version = "0.3.7", default-features = false, features = ["tokio", "gzip"] }
-futures = "0.3"
 futures-core = "0.3"
 futures-util = "0.3"
 crossbeam-utils = "0.8"

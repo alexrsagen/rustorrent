@@ -1,13 +1,11 @@
-use crate::bitfield::Bitfield;
+use super::announce::{Announce, AnnounceRequest};
 use crate::error::Error;
-use crate::tracker::announce::Announce;
 
 use rand::Rng;
-use sha1::{Digest, Sha1};
 use tokio::net::UdpSocket;
 
 use std::convert::{TryFrom, TryInto};
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 pub const MAGIC: i64 = 0x41727101980;
@@ -38,24 +36,8 @@ pub struct RequestAuth {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum RequestData {
     Connect,
-    Announce {
-        info_hash: [u8; 20],
-        peer_id: [u8; 20],
-        downloaded: i64,
-        left: i64,
-        uploaded: i64,
-        event: i32,
-        ip_addr: Ipv4Addr,
-        key: u32,
-        num_want: i32,
-        port: u16,
-        // extensions: u16,
-        auth: Option<RequestAuth>,
-        request_string: Option<String>,
-    },
-    Scrape {
-        info_hashes: Vec<[u8; 20]>,
-    },
+    Announce(AnnounceRequest),
+    Scrape { info_hashes: Vec<[u8; 20]> },
     Unknown,
 }
 
@@ -67,48 +49,33 @@ impl From<&Request> for Vec<u8> {
         bytes.extend_from_slice(&value.transaction_id.to_be_bytes()[..]);
         match &value.data {
             RequestData::Connect => {}
-            RequestData::Announce {
-                info_hash,
-                peer_id,
-                downloaded,
-                left,
-                uploaded,
-                event,
-                ip_addr,
-                key,
-                num_want,
-                port,
-                auth,
-                request_string,
-            } => {
-                bytes.extend_from_slice(&info_hash[..]);
-                bytes.extend_from_slice(&peer_id[..]);
-                bytes.extend_from_slice(&downloaded.to_be_bytes()[..]);
-                bytes.extend_from_slice(&left.to_be_bytes()[..]);
-                bytes.extend_from_slice(&uploaded.to_be_bytes()[..]);
-                bytes.extend_from_slice(&event.to_be_bytes()[..]);
-                bytes.extend_from_slice(&ip_addr.octets()[..]);
-                bytes.extend_from_slice(&key.to_be_bytes()[..]);
-                bytes.extend_from_slice(&num_want.to_be_bytes()[..]);
-                bytes.extend_from_slice(&port.to_be_bytes()[..]);
-                let extensions = Bitfield::new(16);
-                if auth.is_some() {
-                    extensions.set_bit(0);
-                }
-                if request_string.is_some() {
-                    extensions.set_bit(1);
-                }
-                bytes.extend_from_slice(&extensions.to_vec());
-                if let Some(v) = auth {
-                    let passwd_hash: [u8; 20] = Sha1::digest(&bytes).into();
-                    bytes.extend_from_slice(&(v.username.len() as i8).to_be_bytes()[..]);
-                    bytes.extend_from_slice(v.username.as_bytes());
-                    bytes.extend_from_slice(&passwd_hash[0..8]);
-                }
-                if let Some(v) = request_string {
-                    bytes.extend_from_slice(&(v.len() as i8).to_be_bytes()[..]);
-                    bytes.extend_from_slice(v.as_bytes());
-                }
+            RequestData::Announce(req) => {
+                bytes.extend_from_slice(&req.info_hash.unwrap_or_default()[..]);
+                bytes.extend_from_slice(&req.peer_id.unwrap_or_default()[..]);
+                bytes.extend_from_slice(
+                    &(req.downloaded.unwrap_or_default() as i64).to_be_bytes()[..],
+                );
+                bytes.extend_from_slice(&(req.left.unwrap_or_default() as i64).to_be_bytes()[..]);
+                bytes.extend_from_slice(
+                    &(req.uploaded.unwrap_or_default() as i64).to_be_bytes()[..],
+                );
+                bytes.extend_from_slice(
+                    &req.event
+                        .as_ref()
+                        .map(i32::from)
+                        .unwrap_or(EVENT_NONE)
+                        .to_be_bytes()[..],
+                );
+                bytes.extend_from_slice(&Ipv4Addr::new(0, 0, 0, 0).octets()[..]);
+                bytes.extend_from_slice(
+                    &req.key
+                        .as_ref()
+                        .map(u32::from)
+                        .unwrap_or_default()
+                        .to_be_bytes()[..],
+                );
+                bytes.extend_from_slice(&req.num_want.unwrap_or_default().to_be_bytes()[..]);
+                bytes.extend_from_slice(&req.port.unwrap_or_default().to_be_bytes()[..]);
             }
             RequestData::Scrape { info_hashes } => {
                 for info_hash in info_hashes {
@@ -148,109 +115,76 @@ impl TryFrom<&[u8]> for Request {
                 if bytes.len() < 98 {
                     return Err(Error::MessageLengthInvalid);
                 }
-                let info_hash = bytes[16..36]
-                    .try_into()
-                    .map_err(|_| Error::ValueLengthInvalid("info_hash".into()))?;
-                let peer_id = bytes[36..56]
-                    .try_into()
-                    .map_err(|_| Error::ValueLengthInvalid("peer_id".into()))?;
-                let downloaded = i64::from_be_bytes(
+                let info_hash = Some(
+                    bytes[16..36]
+                        .try_into()
+                        .map_err(|_| Error::ValueLengthInvalid("info_hash".into()))?,
+                );
+                let peer_id = Some(
+                    bytes[36..56]
+                        .try_into()
+                        .map_err(|_| Error::ValueLengthInvalid("peer_id".into()))?,
+                );
+                let downloaded = Some(i64::from_be_bytes(
                     bytes[56..64]
                         .try_into()
                         .map_err(|_| Error::ValueLengthInvalid("downloaded".into()))?,
-                );
-                let left = i64::from_be_bytes(
+                ) as usize);
+                let left = Some(i64::from_be_bytes(
                     bytes[64..72]
                         .try_into()
                         .map_err(|_| Error::ValueLengthInvalid("left".into()))?,
-                );
-                let uploaded = i64::from_be_bytes(
+                ) as usize);
+                let uploaded = Some(i64::from_be_bytes(
                     bytes[72..80]
                         .try_into()
                         .map_err(|_| Error::ValueLengthInvalid("uploaded".into()))?,
+                ) as usize);
+                let event = Some(
+                    i32::from_be_bytes(
+                        bytes[80..84]
+                            .try_into()
+                            .map_err(|_| Error::ValueLengthInvalid("event".into()))?,
+                    )
+                    .into(),
                 );
-                let event = i32::from_be_bytes(
-                    bytes[80..84]
-                        .try_into()
-                        .map_err(|_| Error::ValueLengthInvalid("event".into()))?,
-                );
-                let ip_addr: [u8; 4] = bytes[84..88]
+                let ip_octets: [u8; 4] = bytes[84..88]
                     .try_into()
-                    .map_err(|_| Error::ValueLengthInvalid("ip_addr".into()))?;
-                let ip_addr = ip_addr.into();
-                let key = u32::from_be_bytes(
-                    bytes[88..92]
-                        .try_into()
-                        .map_err(|_| Error::ValueLengthInvalid("key".into()))?,
+                    .map_err(|_| Error::ValueLengthInvalid("ip".into()))?;
+                let ip = Some(IpAddr::V4(Ipv4Addr::from(ip_octets)));
+                let key = Some(
+                    u32::from_be_bytes(
+                        bytes[88..92]
+                            .try_into()
+                            .map_err(|_| Error::ValueLengthInvalid("key".into()))?,
+                    )
+                    .into(),
                 );
-                let num_want = i32::from_be_bytes(
+                let num_want = Some(i32::from_be_bytes(
                     bytes[92..96]
                         .try_into()
-                        .map_err(|_| Error::ValueLengthInvalid("num_want".into()))?,
-                );
-                let port = u16::from_be_bytes(
+                        .map_err(|_| Error::ValueLengthInvalid("numwant".into()))?,
+                ));
+                let port = Some(u16::from_be_bytes(
                     bytes[96..98]
                         .try_into()
                         .map_err(|_| Error::ValueLengthInvalid("port".into()))?,
-                );
-                let mut auth: Option<RequestAuth> = None;
-                let mut request_string: Option<String> = None;
-                if bytes.len() >= 100 {
-                    let extensions = Bitfield::try_from_bytes(bytes[98..100].to_vec(), 16)?;
-                    let mut i = 100;
-                    if extensions.get(0) {
-                        if bytes.len() < i {
-                            return Err(Error::MessageLengthInvalid);
-                        }
-                        let username_len = bytes[i] as usize;
-                        i += 1;
-                        if bytes.len() < i + username_len + 8 {
-                            return Err(Error::MessageLengthInvalid);
-                        }
-                        let username =
-                            String::from_utf8_lossy(&bytes[i..i + username_len]).to_string();
-                        i += username_len;
-                        let passwd_hash = Some(
-                            bytes[i..i + 8]
-                                .try_into()
-                                .map_err(|_| Error::ValueLengthInvalid("passwd_hash".into()))?,
-                        );
-                        i += 8;
-                        auth = Some(RequestAuth {
-                            username,
-                            password: None,
-                            passwd_hash,
-                        });
-                    }
-                    if extensions.get(1) {
-                        if bytes.len() < i {
-                            return Err(Error::MessageLengthInvalid);
-                        }
-                        let request_string_len = bytes[i] as usize;
-                        i += 1;
-                        if bytes.len() < i + request_string_len {
-                            return Err(Error::MessageLengthInvalid);
-                        }
-                        // i += request_string_len;
-                        request_string = Some(
-                            String::from_utf8_lossy(&bytes[i..i + request_string_len]).to_string(),
-                        );
-                    }
-                }
-                RequestData::Announce {
+                ));
+                RequestData::Announce(AnnounceRequest {
                     info_hash,
                     peer_id,
+                    port,
+                    uploaded,
                     downloaded,
                     left,
-                    uploaded,
+                    compact: false,
+                    no_peer_id: false,
                     event,
-                    ip_addr,
-                    key,
+                    ip,
                     num_want,
-                    port,
-                    auth,
-                    request_string,
-                }
+                    key,
+                    tracker_id: None,
+                })
             }
             ACTION_SCRAPE => {
                 let info_hash_num = (bytes.len() - 16) / 20;

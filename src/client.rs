@@ -1,23 +1,26 @@
-use crate::{resolver, torrent::TorrentAnnounceState};
-use crate::http::DualSchemeClient;
-use crate::tracker::{TrackerClient, TrackerClientOptions};
-use crate::peer::{Peer, PeerInfo, PortRange};
-use crate::peer::proto::Message;
 use crate::error::Error;
+use crate::http::DualSchemeClient;
+use crate::peer::proto::Message;
+use crate::peer::{Peer, PeerInfo, PortRange};
 use crate::torrent::metainfo::{Files, Metainfo};
 use crate::torrent::Torrent;
+use crate::tracker::{TrackerClient, TrackerClientOptions};
+use crate::{resolver, torrent::TorrentAnnounceState};
 
 use chashmap::CHashMap;
+use chrono::Utc;
 use tokio::task;
 use tokio::time::sleep;
-use chrono::Utc;
 
-use std::{cmp::{max, min}, collections::HashMap};
 use std::default::Default;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use std::{
+    cmp::{max, min},
+    collections::HashMap,
+};
 
 fn print_metainfo_files(metainfo: &Metainfo) {
     println!("[debug] torrent files:");
@@ -61,7 +64,6 @@ impl Default for ClientOptions {
     }
 }
 
-#[derive(Debug)]
 pub struct Client {
     pub opts: ClientOptions,
     local_peer: PeerInfo,
@@ -74,7 +76,11 @@ impl Client {
         if crate::DEBUG {
             println!("[debug] local peer: {}", local_peer);
         }
-        Self { opts, local_peer, torrents: CHashMap::new() }
+        Self {
+            opts,
+            local_peer,
+            torrents: CHashMap::new(),
+        }
     }
 
     /// Download method, implementing rarest first piece selection algorithm:
@@ -190,10 +196,14 @@ impl Client {
                     Ok(announce) => {
                         let mut new_peers: Vec<PeerInfo> = Vec::new();
                         for peer_info in announce.peers.clone() {
-                            torrent.peers.upsert(peer_info, || {
-                                new_peers.push(peer_info);
-                                Peer::new(peer_info, torrent.metainfo.info_hash, self.clone())
-                            }, |_| ());
+                            torrent.peers.upsert(
+                                peer_info,
+                                || {
+                                    new_peers.push(peer_info);
+                                    Peer::new(peer_info, torrent.metainfo.info_hash, self.clone())
+                                },
+                                |_| (),
+                            );
                         }
 
                         state.last_announce = Some(announce);
@@ -203,7 +213,12 @@ impl Client {
                         println!("[debug] new peers:");
                         for peer_info in new_peers {
                             println!("- {}", &peer_info);
-                            task::spawn(self.clone().connect_and_run_event_loop(torrent.metainfo.info_hash, peer_info));
+                            task::spawn(
+                                self.clone().connect_and_run_event_loop(
+                                    torrent.metainfo.info_hash,
+                                    peer_info,
+                                ),
+                            );
                         }
                         println!(" ");
                     }
@@ -219,7 +234,11 @@ impl Client {
         }
     }
 
-    pub async fn connect_and_run_event_loop(self: Arc<Self>, info_hash: [u8; 20], peer_info: PeerInfo) {
+    pub async fn connect_and_run_event_loop(
+        self: Arc<Self>,
+        info_hash: [u8; 20],
+        peer_info: PeerInfo,
+    ) {
         let torrent = match self.torrents.get(&info_hash) {
             Some(torrent) => torrent,
             None => {
@@ -227,7 +246,7 @@ impl Client {
                     println!("[debug] torrent not found in client");
                 }
                 return;
-            },
+            }
         };
         let peer = match torrent.peers.get(&peer_info) {
             Some(peer) => peer,
@@ -236,7 +255,7 @@ impl Client {
                     println!("[debug] peer not found in torrent");
                 }
                 return;
-            },
+            }
         };
 
         match peer.connect().await {
@@ -263,7 +282,10 @@ impl Client {
                                     match peer.run_event_loop(self.clone()).await {
                                         Ok(_) => {
                                             if crate::DEBUG {
-                                                println!("[debug] disconnected from peer {}", &peer_info);
+                                                println!(
+                                                    "[debug] disconnected from peer {}",
+                                                    &peer_info
+                                                );
                                             }
                                         }
                                         Err(e) => {
@@ -295,7 +317,7 @@ impl Client {
                         );
                     }
                 }
-            },
+            }
             Err(e) => {
                 if crate::DEBUG {
                     println!("[debug] error connecting to peer {}: {}", &peer_info, e);

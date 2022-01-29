@@ -1,8 +1,10 @@
-use crate::{error::Error, peer::PeerInfo};
-use crate::peer::PortRange;
+use crate::error::Error;
+use crate::peer::{PeerInfo, PortRange};
+
+use super::announce::{Announce, AnnounceEvent, AnnounceKey, AnnounceRequest, AnnounceResponse};
 
 use chashmap::CHashMap;
-use chrono::{DateTime, Utc, Duration};
+use chrono::{DateTime, Duration, Utc};
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Method, Request, Response, Server};
@@ -10,13 +12,11 @@ use hyper::{Body, Method, Request, Response, Server};
 use rand::Rng;
 
 use std::convert::Infallible;
-use std::sync::Arc;
 use std::default::Default;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::ops::{RangeInclusive, Add};
+use std::ops::{Add, RangeInclusive};
 use std::str::FromStr;
-
-use super::announce::{AnnounceRequest, AnnounceResponse, Announce};
+use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct TrackerServerOptions {
@@ -44,7 +44,7 @@ struct TrackerServerPeer {
     info: PeerInfo,
     info_hash: [u8; 20],
     user_agent: Option<String>,
-    key: Option<Vec<u8>>,
+    key: Option<AnnounceKey>,
     expire: DateTime<Utc>,
     seed: bool,
 }
@@ -87,7 +87,11 @@ impl TrackerHttpServer {
 }
 
 fn announce_failure(reason: &str) -> Response<Body> {
-    Response::builder().status(400).header("Content-Type", "text/plain").body(AnnounceResponse::Failure(reason.into()).into()).unwrap()
+    Response::builder()
+        .status(400)
+        .header("Content-Type", "text/plain")
+        .body(AnnounceResponse::Failure(reason.into()).into())
+        .unwrap()
 }
 
 async fn handle(
@@ -137,7 +141,10 @@ async fn handle(
         peer_id: announce_req.peer_id.unwrap(),
         info_hash: announce_req.info_hash.unwrap(),
     };
-    let info = PeerInfo::new(announce_req.peer_id, SocketAddr::new(announce_req.ip.unwrap(), announce_req.port.unwrap()));
+    let info = PeerInfo::new(
+        announce_req.peer_id,
+        SocketAddr::new(announce_req.ip.unwrap(), announce_req.port.unwrap()),
+    );
     if crate::DEBUG {
         println!("[debug] announce from peer {}", &info);
     }
@@ -150,30 +157,36 @@ async fn handle(
     } else {
         None
     };
-    let expire = if announce_req.event == Some(String::from("stopped")) {
+    let expire = if announce_req.event == Some(AnnounceEvent::Stopped) {
         now.add(Duration::seconds(-60))
     } else {
         now.add(Duration::seconds(300))
     };
-    server.peers.upsert(key, || TrackerServerPeer {
-        info,
-        info_hash: announce_req.info_hash.unwrap(),
-        user_agent: user_agent.clone(),
-        key: announce_req.key.clone(),
-        expire,
-        seed: announce_req.left == Some(0),
-    }, |peer| {
-        // only update peer if key matches
-        if peer.key == announce_req.key {
-            peer.info = info;
-            peer.user_agent = user_agent.clone();
-            peer.expire = expire;
-            peer.seed = announce_req.left == Some(0);
-        }
-    });
+    server.peers.upsert(
+        key,
+        || TrackerServerPeer {
+            info,
+            info_hash: announce_req.info_hash.unwrap(),
+            user_agent: user_agent.clone(),
+            key: announce_req.key.clone(),
+            expire,
+            seed: announce_req.left == Some(0),
+        },
+        |peer| {
+            // only update peer if key matches
+            if peer.key == announce_req.key {
+                peer.info = info;
+                peer.user_agent = user_agent.clone();
+                peer.expire = expire;
+                peer.seed = announce_req.left == Some(0);
+            }
+        },
+    );
 
     // remove expired peers (expiry + 1 minute)
-    server.peers.retain(|_k, v| now < v.expire.add(Duration::seconds(60)));
+    server
+        .peers
+        .retain(|_k, v| now < v.expire.add(Duration::seconds(60)));
 
     let mut peers: Vec<PeerInfo> = Vec::with_capacity(server.peers.len());
     let mut complete = 0;
@@ -192,13 +205,16 @@ async fn handle(
     peers.shrink_to_fit();
 
     // return bencoded peer list (excluding the announcing peer)
-    Ok(Response::new(AnnounceResponse::Success(Announce {
-        warning_message: None,
-        interval: std::time::Duration::from_secs(rng.gen_range(300..=310)),
-        min_interval: Some(std::time::Duration::from_secs(60)),
-        tracker_id: None,
-        complete,
-        incomplete,
-        peers,
-    }).into()))
+    Ok(Response::new(
+        AnnounceResponse::Success(Announce {
+            warning_message: None,
+            interval: std::time::Duration::from_secs(rng.gen_range(300..=310)),
+            min_interval: Some(std::time::Duration::from_secs(60)),
+            tracker_id: None,
+            complete,
+            incomplete,
+            peers,
+        })
+        .into(),
+    ))
 }

@@ -1,5 +1,4 @@
-use crate::peer::port_range::PortRange;
-
+use super::port_range::PortRange;
 use crate::bencode;
 use crate::error::Error;
 

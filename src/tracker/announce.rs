@@ -1,11 +1,12 @@
+use super::udp_conn;
 use crate::bencode;
 use crate::error::Error;
+use crate::http::query_string::{decode, write_pair, Parse};
 use crate::peer::PeerInfo;
-use crate::http::query_string::{Parse, decode, write_pair};
 
-use std::{net::IpAddr, convert::Infallible};
+use std::convert::{Infallible, TryFrom, TryInto};
+use std::net::IpAddr;
 use std::str::FromStr;
-use std::convert::{TryFrom, TryInto};
 use std::time::Duration;
 
 fn boolish(s: &str) -> bool {
@@ -15,6 +16,127 @@ fn boolish(s: &str) -> bool {
         "yes" => true,
         "true" => true,
         _ => false,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum AnnounceEvent {
+    Started,
+    Stopped,
+    Completed,
+    UnknownHttp(String),
+    UnknownUdp(i32),
+}
+
+impl FromStr for AnnounceEvent {
+    type Err = Infallible;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "started" => Ok(Self::Started),
+            "stopped" => Ok(Self::Stopped),
+            "completed" => Ok(Self::Completed),
+            _ => Ok(Self::UnknownHttp(String::from(s))),
+        }
+    }
+}
+
+impl From<String> for AnnounceEvent {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "started" => Self::Started,
+            "stopped" => Self::Stopped,
+            "completed" => Self::Completed,
+            _ => Self::UnknownHttp(s),
+        }
+    }
+}
+
+impl From<i32> for AnnounceEvent {
+    fn from(e: i32) -> Self {
+        match e {
+            udp_conn::EVENT_STARTED => AnnounceEvent::Started,
+            udp_conn::EVENT_STOPPED => AnnounceEvent::Stopped,
+            udp_conn::EVENT_COMPLETED => AnnounceEvent::Completed,
+            x => AnnounceEvent::UnknownUdp(x),
+        }
+    }
+}
+
+impl ToString for AnnounceEvent {
+    fn to_string(&self) -> String {
+        match self {
+            Self::Started => String::from("started"),
+            Self::Stopped => String::from("stopped"),
+            Self::Completed => String::from("completed"),
+            Self::UnknownHttp(s) => s.clone(),
+            _ => String::new(),
+        }
+    }
+}
+
+impl From<&AnnounceEvent> for i32 {
+    fn from(e: &AnnounceEvent) -> Self {
+        match e {
+            AnnounceEvent::Started => udp_conn::EVENT_STARTED,
+            AnnounceEvent::Stopped => udp_conn::EVENT_STOPPED,
+            AnnounceEvent::Completed => udp_conn::EVENT_COMPLETED,
+            AnnounceEvent::UnknownUdp(x) => *x,
+            _ => udp_conn::EVENT_NONE,
+        }
+    }
+}
+
+impl From<AnnounceEvent> for i32 {
+    fn from(e: AnnounceEvent) -> Self {
+        match e {
+            AnnounceEvent::Started => udp_conn::EVENT_STARTED,
+            AnnounceEvent::Stopped => udp_conn::EVENT_STOPPED,
+            AnnounceEvent::Completed => udp_conn::EVENT_COMPLETED,
+            AnnounceEvent::UnknownUdp(x) => x,
+            _ => udp_conn::EVENT_NONE,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum AnnounceKey {
+    Http(Vec<u8>),
+    Udp(u32),
+}
+
+impl From<Vec<u8>> for AnnounceKey {
+    fn from(key: Vec<u8>) -> Self {
+        Self::Http(key)
+    }
+}
+
+impl From<&[u8]> for AnnounceKey {
+    fn from(key: &[u8]) -> Self {
+        Self::Http(key.to_vec())
+    }
+}
+
+impl From<u32> for AnnounceKey {
+    fn from(key: u32) -> Self {
+        Self::Udp(key)
+    }
+}
+
+impl From<&AnnounceKey> for u32 {
+    fn from(key: &AnnounceKey) -> Self {
+        match key {
+            AnnounceKey::Udp(x) => *x,
+            _ => 0,
+        }
+    }
+}
+
+impl From<AnnounceKey> for u32 {
+    fn from(key: AnnounceKey) -> Self {
+        match key {
+            AnnounceKey::Udp(x) => x,
+            _ => 0,
+        }
     }
 }
 
@@ -40,13 +162,13 @@ pub struct AnnounceRequest {
     /// Some(String::from("started")): The first request to the tracker must include the event key with this value.
     /// Some(String::from("stopped")): Must be sent to the tracker if the client is shutting down gracefully.
     /// Some(String::from("completed")): Must be sent to the tracker when the download completes. However, must not be sent if the download was already 100% complete when the client started. Presumably, this is to allow the tracker to increment the "completed downloads" metric based solely on this event.
-    pub event: Option<String>,
+    pub event: Option<AnnounceEvent>,
     /// Optional. The true IP address of the client machine, in dotted quad format or rfc3513 defined hexed IPv6 address. Notes: In general this parameter is not necessary as the address of the client can be determined from the IP address from which the HTTP request came. The parameter is only needed in the case where the IP address that the request came in on is not the IP address of the client. This happens if the client is communicating to the tracker through a proxy (or a transparent web proxy/cache.) It also is necessary when both the client and the tracker are on the same local side of a NAT gateway. The reason for this is that otherwise the tracker would give out the internal (RFC1918) address of the client, which is not routable. Therefore the client must explicitly state its (external, routable) IP address to be given out to external peers. Various trackers treat this parameter differently. Some only honor it only if the IP address that the request came in on is in RFC1918 space. Others honor it unconditionally, while others ignore it completely. In case of IPv6 address (e.g.: 2001:db8:1:2::100) it indicates only that client can communicate via IPv6.
     pub ip: Option<IpAddr>,
     /// Optional. Number of peers that the client would like to receive from the tracker. This value is permitted to be zero. If omitted, typically defaults to 50 peers.
     pub num_want: Option<i32>,
     /// Optional. An additional identification that is not shared with any other peers. It is intended to allow a client to prove their identity should their IP address change.
-    pub key: Option<Vec<u8>>,
+    pub key: Option<AnnounceKey>,
     /// Optional. If a previous announce contained a tracker id, it should be set here.
     pub tracker_id: Option<Vec<u8>>,
 }
@@ -67,7 +189,11 @@ impl ToString for AnnounceRequest {
             write_pair(&mut query, "uploaded".as_bytes(), v.to_string().as_bytes());
         }
         if let Some(v) = &self.downloaded {
-            write_pair(&mut query, "downloaded".as_bytes(), v.to_string().as_bytes());
+            write_pair(
+                &mut query,
+                "downloaded".as_bytes(),
+                v.to_string().as_bytes(),
+            );
         }
         if let Some(v) = &self.left {
             write_pair(&mut query, "left".as_bytes(), v.to_string().as_bytes());
@@ -79,7 +205,7 @@ impl ToString for AnnounceRequest {
             write_pair(&mut query, "no_peer_id".as_bytes(), "1".as_bytes());
         }
         if let Some(v) = &self.event {
-            write_pair(&mut query, "event".as_bytes(), v.as_bytes());
+            write_pair(&mut query, "event".as_bytes(), v.to_string().as_bytes());
         }
         if let Some(v) = &self.ip {
             write_pair(&mut query, "ip".as_bytes(), v.to_string().as_bytes());
@@ -87,7 +213,7 @@ impl ToString for AnnounceRequest {
         if let Some(v) = &self.num_want {
             write_pair(&mut query, "numwant".as_bytes(), v.to_string().as_bytes());
         }
-        if let Some(v) = &self.key {
+        if let Some(AnnounceKey::Http(v)) = &self.key {
             write_pair(&mut query, "key".as_bytes(), v.as_ref());
         }
         if let Some(v) = &self.tracker_id {
@@ -99,7 +225,9 @@ impl ToString for AnnounceRequest {
 
 impl From<&mut Parse<'_>> for AnnounceRequest {
     fn from(input: &mut Parse<'_>) -> AnnounceRequest {
-        let mut output = AnnounceRequest { ..Default::default() };
+        let mut output = AnnounceRequest {
+            ..Default::default()
+        };
         for (k, v) in input {
             match k.decode_utf8_lossy().as_ref() {
                 "info_hash" => {
@@ -107,53 +235,57 @@ impl From<&mut Parse<'_>> for AnnounceRequest {
                     if bytes.len() == 20 {
                         output.info_hash = bytes.try_into().ok();
                     }
-                },
+                }
                 "peer_id" => {
                     let bytes: Vec<u8> = v.collect();
                     if bytes.len() == 20 {
                         output.peer_id = bytes.try_into().ok();
                     }
-                },
+                }
                 "port" => {
                     output.port = u16::from_str(v.decode_utf8_lossy().as_ref()).ok();
-                },
+                }
                 "uploaded" => {
                     output.uploaded = usize::from_str(v.decode_utf8_lossy().as_ref()).ok();
-                },
+                }
                 "downloaded" => {
                     output.downloaded = usize::from_str(v.decode_utf8_lossy().as_ref()).ok();
-                },
+                }
                 "left" => {
                     output.left = usize::from_str(v.decode_utf8_lossy().as_ref()).ok();
-                },
+                }
                 "compact" => {
                     output.compact = boolish(v.decode_utf8_lossy().as_ref());
-                },
+                }
                 "no_peer_id" => {
                     output.no_peer_id = boolish(v.decode_utf8_lossy().as_ref());
-                },
+                }
                 "event" => {
-                    output.event = v.decode_utf8().as_deref().ok().map(str::to_string);
-                },
+                    output.event = v
+                        .decode_utf8()
+                        .as_deref()
+                        .ok()
+                        .map(|s| AnnounceEvent::from_str(s).unwrap());
+                }
                 "ip" => {
                     output.ip = IpAddr::from_str(v.decode_utf8_lossy().as_ref()).ok();
-                },
+                }
                 "numwant" => {
                     output.num_want = i32::from_str(v.decode_utf8_lossy().as_ref()).ok();
-                },
+                }
                 "key" => {
                     let bytes: Vec<u8> = v.collect();
                     if !bytes.is_empty() {
-                        output.key = Some(bytes);
+                        output.key = Some(bytes.into());
                     }
-                },
+                }
                 "trackerid" => {
                     let bytes: Vec<u8> = v.collect();
                     if !bytes.is_empty() {
                         output.tracker_id = Some(bytes);
                     }
-                },
-                _ => {},
+                }
+                _ => {}
             }
         }
         output

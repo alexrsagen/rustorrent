@@ -14,12 +14,12 @@ pub struct Handshake {
 }
 
 impl Handshake {
-    pub fn new(info_hash: &[u8; 20], peer_id: &[u8; 20]) -> Self {
+    pub fn new(info_hash: [u8; 20], peer_id: [u8; 20]) -> Self {
         Self {
             pstr: String::from(PSTR),
             reserved: Bitfield::new(8 * 8),
-            info_hash: *info_hash,
-            peer_id: *peer_id,
+            info_hash: info_hash,
+            peer_id: peer_id,
         }
     }
 }
@@ -173,7 +173,9 @@ impl From<&[u8]> for Message {
                 }
                 Self::Have(u32::from_be_bytes(bytes[1..5].try_into().unwrap()))
             }
-            Self::ID_BITFIELD => Self::Bitfield(Bitfield::from_bytes_unchecked(bytes[1..].to_vec())),
+            Self::ID_BITFIELD => {
+                Self::Bitfield(Bitfield::from_bytes_unchecked(bytes[1..].to_vec()))
+            }
             Self::ID_REQUEST => {
                 if bytes.len() != 13 {
                     return Self::InvalidLength;

@@ -7,10 +7,10 @@ use piece::PieceStore;
 
 use crate::error::Error;
 use crate::http::{read_body, DualSchemeClient};
-use crate::peer::{Peer, PeerInfo};
 use crate::peer::proto::Handshake;
-use crate::tracker::announce::Announce;
+use crate::peer::{Peer, PeerInfo};
 use crate::skip_wrap_vec::SkipWrapVec;
+use crate::tracker::announce::Announce;
 
 use chrono::{DateTime, Utc};
 use rand::seq::SliceRandom;
@@ -34,7 +34,6 @@ pub struct TorrentAnnounceState {
     pub last_time: Option<DateTime<Utc>>,
     pub last_announce: Option<Announce>,
 }
-#[derive(Debug)]
 pub struct Torrent {
     pub uploaded: AtomicUsize,
     pub downloaded: AtomicUsize,
@@ -56,7 +55,7 @@ impl Torrent {
         let announce = announce.into_iter().map(SkipWrapVec::from).collect();
 
         // prepare handshake
-        let handshake = Handshake::new(&metainfo.info_hash, local_peer.id.as_ref().unwrap());
+        let handshake = Handshake::new(metainfo.info_hash, local_peer.id.unwrap());
 
         let piece_count = metainfo.info.piece_hashes.len();
         let piece_size = metainfo.info.piece_length;

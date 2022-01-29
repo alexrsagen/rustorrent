@@ -2,18 +2,14 @@ use crate::bitfield::Bitfield;
 use crate::client::Client;
 use crate::error::Error;
 use crate::peer::proto::{PieceBlock, Request};
-use crate::peer::Peer;
+use crate::peer::{Peer, PeerInfo};
 
-use chrono::{DateTime, Utc};
 use crossbeam_utils::atomic::AtomicCell;
-use futures::StreamExt;
+use parking_lot::RwLock;
 use rand::seq::SliceRandom;
 use rand::Rng;
 use sha1::{Digest, Sha1};
-use tokio::fs;
-use tokio::sync::{Mutex, RwLock};
 
-use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -28,31 +24,33 @@ pub fn get_block_begin(block_size: usize, block_index: usize) -> usize {
 pub fn get_block_size(
     piece_size: usize,
     block_size: usize,
+    block_count: usize,
     block_index: usize,
 ) -> Result<usize, Error> {
-    let block_count = get_block_count(piece_size, block_size);
     if block_index >= block_count {
+        // invalid block
         return Err(Error::OutOfRange);
     }
     if block_index == block_count - 1 {
-        Ok(block_size - ((block_count * block_size) - piece_size))
-    } else {
-        Ok(block_size)
+        // last block
+        return Ok(block_size - ((block_count * block_size) - piece_size));
     }
+    // any other block
+    Ok(block_size)
 }
 
 pub fn get_block_index(
     piece_size: usize,
     block_size: usize,
+    block_count: usize,
     begin: usize,
     length: usize,
 ) -> Result<usize, Error> {
     if begin + length >= piece_size {
         return Err(Error::OutOfRange);
     }
-    let block_count = get_block_count(piece_size, block_size);
     let block_index = ((begin as f64 / piece_size as f64) * block_count as f64).floor() as usize;
-    if length != get_block_size(piece_size, block_size, block_index)? {
+    if length != get_block_size(piece_size, block_size, block_count, block_index)? {
         return Err(Error::OutOfRange);
     }
     if begin != get_block_begin(block_size, block_index) {
@@ -87,12 +85,10 @@ pub enum PickMode {
     EndGame,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct PieceBlockRequest {
-    #[allow(unused)]
-    picked_at: DateTime<Utc>,
     request: Request,
-    peer: Arc<Peer>,
+    peer_info: PeerInfo,
 }
 
 impl PartialEq for PieceBlockRequest {
@@ -101,7 +97,7 @@ impl PartialEq for PieceBlockRequest {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum PieceBlockState {
     Open,
     Requested(PieceBlockRequest),
@@ -117,11 +113,10 @@ pub enum PieceState {
 
 pub type Pieces = Vec<Arc<Piece>>;
 
-#[derive(Debug)]
 pub struct PieceStore {
     block_size: usize,
     pieces: Pieces,
-    pieces_by_priority: RwLock<Vec<Vec<usize>>>, // TODO: eliminate mutex
+    pieces_by_priority: RwLock<Vec<Vec<usize>>>,
     pick_mode: AtomicCell<PickMode>,
 }
 
@@ -146,21 +141,22 @@ impl PieceStore {
     // called once we have a complete piece and every time piece availability
     // changes (only if we have a complete piece)
     pub async fn update_priority(&self) {
-        let mut pieces_by_priority = self.pieces_by_priority.write().await;
+        let mut pieces_by_priority = self.pieces_by_priority.write();
         pieces_by_priority.clear();
 
         // get pieces as (index, priority)
-        let mut piece_priority: Vec<(usize, usize)> = futures::stream::iter(self.pieces.iter())
+        let mut piece_priority: Vec<(usize, usize)> = self
+            .pieces
+            .iter()
             .enumerate()
-            .filter_map(|(i, piece)| async move {
+            .filter_map(|(i, piece)| {
                 if piece.state.load() != PieceState::Complete {
                     Some((i, piece.priority()))
                 } else {
                     None
                 }
             })
-            .collect()
-            .await;
+            .collect();
         if piece_priority.is_empty() {
             return;
         }
@@ -227,13 +223,20 @@ impl PieceStore {
         Ok(())
     }
 
-    pub async fn write_block(&self, peer: &Peer, client: Arc<Client>, block: PieceBlock) -> Result<(), Error> {
+    pub async fn write_block(
+        &self,
+        peer: &Peer,
+        client: Arc<Client>,
+        block: PieceBlock,
+    ) -> Result<(), Error> {
         let piece_index = block.index as usize;
         if piece_index >= self.pieces.len() {
             return Err(Error::OutOfRange);
         }
         let piece = &self.pieces[piece_index];
-        piece.write_block(peer, client, block, self.block_size).await?;
+        piece
+            .write_block(peer, client, block, self.block_size)
+            .await?;
         // check for complete (verified) piece
         if piece.state.load() == PieceState::Complete {
             // update pick mode
@@ -252,7 +255,11 @@ impl PieceStore {
         bitfield
     }
 
-    pub async fn pick_block(&self, peer: Arc<Peer>, client: Arc<Client>) -> Option<PieceBlockRequest> {
+    pub async fn pick_block(
+        &self,
+        peer: Arc<Peer>,
+        client: Arc<Client>,
+    ) -> Option<PieceBlockRequest> {
         let torrent = match client.torrents.get(&peer.info_hash) {
             Some(torrent) => torrent,
             None => return None,
@@ -261,7 +268,7 @@ impl PieceStore {
 
         // pick first available piece in highest priority bucket.
         // since each bucket has a random order, the piece will be random.
-        let pieces_by_priority = self.pieces_by_priority.read().await;
+        let pieces_by_priority = self.pieces_by_priority.read();
         for bucket in pieces_by_priority.iter() {
             for piece_index in bucket {
                 // skip piece if peer does not have it
@@ -270,11 +277,11 @@ impl PieceStore {
                 }
 
                 // find all the open blocks of the piece
-                let mut blocks = self.pieces[*piece_index].blocks.lock().await;
+                let blocks = &self.pieces[*piece_index].blocks;
                 let open_blocks: Vec<usize> = blocks
                     .iter()
                     .enumerate()
-                    .filter(|&(_, block)| *block == PieceBlockState::Open)
+                    .filter(|&(_, block)| block.load() == PieceBlockState::Open)
                     .map(|(i, _)| i)
                     .collect();
                 if open_blocks.is_empty() {
@@ -284,20 +291,21 @@ impl PieceStore {
                 // get a random open block
                 let block_index = rand::thread_rng().gen_range(0..open_blocks.len());
                 let block_begin = get_block_begin(self.block_size, block_index);
-                let block_size = get_block_size(piece_size, self.block_size, block_index).unwrap();
+                let block_count = blocks.len();
+                let block_size =
+                    get_block_size(piece_size, self.block_size, block_count, block_index).unwrap();
 
                 let req = PieceBlockRequest {
-                    picked_at: Utc::now(),
                     request: Request {
                         index: *piece_index as u32,
                         begin: block_begin as u32,
                         length: block_size as u32,
                     },
-                    peer: peer.clone(),
+                    peer_info: peer.info,
                 };
 
                 // update block state
-                blocks[block_index] = PieceBlockState::Requested(req.clone());
+                blocks[block_index].store(PieceBlockState::Requested(req.clone()));
                 return Some(req);
             }
         }
@@ -315,15 +323,6 @@ pub enum PieceLocation {
 pub struct PieceData {
     location: PieceLocation,
     buffer: Option<Vec<u8>>,
-}
-
-impl Default for PieceData {
-    fn default() -> Self {
-        Self {
-            location: PieceLocation::Memory,
-            buffer: Default::default(),
-        }
-    }
 }
 
 impl PieceData {
@@ -354,67 +353,30 @@ impl PieceData {
         self.buffer.as_deref()
     }
 
-    /// Loads piece data to memory from disk.
-    ///
-    /// This function makes no guarantees about piece data validity, therefore
-    /// verify should always be called after loading from disk.
-    pub async fn load(&mut self, path: impl AsRef<Path>) -> Result<Option<&[u8]>, Error> {
-        // load from disk, update location
-        if self.location == PieceLocation::Memory {
-            // already stored in memory
-            return Ok(self.buffer());
-        }
-        self.location = PieceLocation::Memory;
-        self.buffer = Some(fs::read(path).await?);
-        Ok(self.buffer())
-    }
-
-    /// Stores piece data in memory to disk.
-    ///
-    /// Remember to always verify the piece before storing it to disk.
-    pub async fn store(&mut self, path: impl AsRef<Path>) -> Result<(), Error> {
-        if self.location == PieceLocation::Disk {
-            // already stored on disk
-            return Ok(());
-        }
-        if let Some(buffer) = &self.buffer {
-            // write to disk, update location
-            fs::write(path, &buffer).await?;
-            self.location = PieceLocation::Disk;
-            self.buffer = None;
-            return Ok(());
-        }
-        Err(Error::NoData)
-    }
-
     pub fn verify(&self, hash: &[u8; 20]) -> bool {
         if let Some(buffer) = self.buffer() {
             let buffer_hash: [u8; 20] = Sha1::digest(buffer).into();
-            return buffer_hash.eq(hash);
+            return &buffer_hash == hash;
         }
         false
     }
 }
 
-#[derive(Debug)]
 pub struct Piece {
-    data: RwLock<PieceData>, // TODO: eliminate mutex
+    data: RwLock<PieceData>,
     state: AtomicCell<PieceState>,
-    blocks: Mutex<Vec<PieceBlockState>>, // TODO: eliminate mutex
+    blocks: Vec<AtomicCell<PieceBlockState>>,
     availability: AtomicUsize,
 }
 
 impl Piece {
-    // TODO: add from_disk method, pointing to a target directory
-
     pub fn new(piece_size: usize, block_size: usize) -> Self {
         Self {
             state: AtomicCell::new(PieceState::Empty),
             data: RwLock::new(PieceData::new()),
-            blocks: Mutex::new(vec![
-                PieceBlockState::Open;
-                get_block_count(piece_size, block_size)
-            ]),
+            blocks: std::iter::repeat_with(|| AtomicCell::new(PieceBlockState::Open))
+                .take(get_block_count(piece_size, block_size))
+                .collect(),
             availability: AtomicUsize::new(0),
         }
     }
@@ -423,10 +385,9 @@ impl Piece {
         Self {
             state: AtomicCell::new(PieceState::Empty),
             data: RwLock::new(PieceData::with_capacity(piece_size)),
-            blocks: Mutex::new(vec![
-                PieceBlockState::Open;
-                get_block_count(piece_size, block_size)
-            ]),
+            blocks: std::iter::repeat_with(|| AtomicCell::new(PieceBlockState::Open))
+                .take(get_block_count(piece_size, block_size))
+                .collect(),
             availability: AtomicUsize::new(0),
         }
     }
@@ -441,7 +402,6 @@ impl Piece {
         self.availability.load(Ordering::SeqCst) * 2 + not_partial
     }
 
-    /// retval = a complete piece was assembled and verified
     async fn write_block(
         &self,
         peer: &Peer,
@@ -467,16 +427,21 @@ impl Piece {
 
         let block_begin = block.begin as usize;
         let block_end = block_begin + block.data.len();
-        let block_index = get_block_index(piece_size, block_size, block_begin, block.data.len())
-            .map_err(|_| Error::InvalidPieceBlockMessage {
-                piece_index,
-                block_index: 0,
-            })?;
+        let block_index = get_block_index(
+            piece_size,
+            block_size,
+            self.blocks.len(),
+            block_begin,
+            block.data.len(),
+        )
+        .map_err(|_| Error::InvalidPieceBlockMessage {
+            piece_index,
+            block_index: 0,
+        })?;
 
         // get block state
-        let mut blocks = self.blocks.lock().await;
-        if let PieceBlockState::Requested(req) = &blocks[block_index] {
-            if !peer.eq(&req.peer) {
+        if let PieceBlockState::Requested(req) = &self.blocks[block_index].load() {
+            if peer.info != req.peer_info {
                 return Err(Error::UnsolicitedPieceBlockMessage {
                     piece_index,
                     block_index,
@@ -502,7 +467,7 @@ impl Piece {
         }
 
         // write data to buffer
-        let mut data = self.data.write().await;
+        let mut data = self.data.write();
         if data.location != PieceLocation::Memory {
             return Err(Error::NoData);
         }
@@ -510,12 +475,13 @@ impl Piece {
             .splice(block_begin..block_end, block.data);
 
         // update block state
-        blocks[block_index] = PieceBlockState::Finished;
+        self.blocks[block_index].store(PieceBlockState::Finished);
 
         // check if all blocks are finished
-        let all_blocks_finished = blocks
+        let all_blocks_finished = self
+            .blocks
             .iter()
-            .all(|block| *block == PieceBlockState::Finished);
+            .all(|block| block.load() == PieceBlockState::Finished);
         if all_blocks_finished {
             // verify piece
             if !data.verify(piece_hash) {
@@ -524,8 +490,8 @@ impl Piece {
                     *item = 0;
                 }
                 // reset piece block state
-                for block in blocks.iter_mut() {
-                    *block = PieceBlockState::Open;
+                for block in self.blocks.iter() {
+                    block.store(PieceBlockState::Open);
                 }
                 // reset piece state
                 self.state.store(PieceState::Empty);

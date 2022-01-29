@@ -37,10 +37,10 @@ impl<'a> Iterator for Parse<'a> {
 
 pub fn encode<I, K, V>(pairs: I) -> String
 where
-	I: IntoIterator,
-	I::Item: Borrow<(K, V)>,
-	K: AsRef<[u8]>,
-	V: AsRef<[u8]>,
+    I: IntoIterator,
+    I::Item: Borrow<(K, V)>,
+    K: AsRef<[u8]>,
+    V: AsRef<[u8]>,
 {
     let mut query = String::new();
     let iter = pairs.into_iter();
