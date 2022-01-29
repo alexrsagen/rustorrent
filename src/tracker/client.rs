@@ -3,7 +3,7 @@ use super::udp_conn::{RequestData, ResponseData, UdpConn};
 
 use crate::error::{Error, InvalidProto, TrackerProto};
 use crate::http::{read_body, DualSchemeClient};
-use crate::peer::PeerInfo;
+use crate::peer::PeerAddrAndId;
 use crate::torrent::Torrent;
 
 use hyper::http::uri::PathAndQuery;
@@ -30,7 +30,7 @@ impl Default for TrackerClientOptions {
 pub struct TrackerClient<'a> {
     client: DualSchemeClient,
     resolver: TokioAsyncResolver,
-    peer_self: &'a PeerInfo,
+    peer_self: &'a PeerAddrAndId,
     opts: TrackerClientOptions,
     http_key: AnnounceKey,
     udp_key: AnnounceKey,
@@ -41,7 +41,7 @@ impl<'a> TrackerClient<'a> {
         client: DualSchemeClient,
         resolver: TokioAsyncResolver,
         opts: TrackerClientOptions,
-        peer_self: &'a PeerInfo,
+        peer_self: &'a PeerAddrAndId,
     ) -> Self {
         let mut rng = rand::thread_rng();
         let http_key: Vec<u8> = (&mut rng)
@@ -61,7 +61,7 @@ impl<'a> TrackerClient<'a> {
     pub fn new_with_resolver(
         resolver: TokioAsyncResolver,
         opts: TrackerClientOptions,
-        peer_self: &'a PeerInfo,
+        peer_self: &'a PeerAddrAndId,
     ) -> Self {
         let client = DualSchemeClient::new_with_resolver(resolver.clone().into());
         Self::new(client, resolver, opts, peer_self)

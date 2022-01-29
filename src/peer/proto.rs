@@ -1,4 +1,6 @@
+use super::PeerId;
 use crate::bitfield::Bitfield;
+use crate::torrent::metainfo::InfoHash;
 use crate::error::{Error, InvalidProto, PeerProto};
 
 use std::convert::{From, TryFrom, TryInto};
@@ -9,12 +11,12 @@ pub const PSTR: &str = "BitTorrent protocol";
 pub struct Handshake {
     pub pstr: String,
     pub reserved: Bitfield,
-    pub info_hash: [u8; 20],
-    pub peer_id: [u8; 20],
+    pub info_hash: InfoHash,
+    pub peer_id: PeerId,
 }
 
 impl Handshake {
-    pub fn new(info_hash: [u8; 20], peer_id: [u8; 20]) -> Self {
+    pub fn new(info_hash: InfoHash, peer_id: PeerId) -> Self {
         Self {
             pstr: String::from(PSTR),
             reserved: Bitfield::new(8 * 8),

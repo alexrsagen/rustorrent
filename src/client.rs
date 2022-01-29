@@ -1,8 +1,8 @@
 use crate::error::Error;
 use crate::http::DualSchemeClient;
 use crate::peer::proto::Message;
-use crate::peer::{PeerInfo, PeerConn, PortRange};
-use crate::torrent::metainfo::{Files, Metainfo};
+use crate::peer::{TorrentPeerInfo, PeerAddrAndId, PeerConn, PortRange};
+use crate::torrent::metainfo::{Files, Metainfo, InfoHash};
 use crate::torrent::{Torrent, TorrentAnnounceState};
 use crate::tracker::{TrackerClient, TrackerClientOptions};
 use crate::bitfield::Bitfield;
@@ -65,13 +65,13 @@ impl Default for ClientOptions {
 
 pub struct Client {
     pub opts: ClientOptions,
-    local_peer: PeerInfo,
-    pub torrents: CHashMap<[u8; 20], Torrent>,
+    local_peer: PeerAddrAndId,
+    pub torrents: CHashMap<InfoHash, Torrent>,
 }
 
 impl Client {
     pub fn new(opts: ClientOptions) -> Self {
-        let local_peer = PeerInfo::new_local("-RS0001-", opts.ip, opts.port_range);
+        let local_peer = PeerAddrAndId::new_local("-RS0001-", opts.ip, opts.port_range);
         if crate::DEBUG {
             println!("[debug] local peer: {}", local_peer);
         }
@@ -139,10 +139,10 @@ impl Client {
         // announce / peer select loop, which repeatedly announces and
         // attempts to establish more peer connections, if more peers are available
         // and we have less peers than desired
-        let mut announce_states: HashMap<[u8; 20], TorrentAnnounceState> = HashMap::new();
-        announce_states.insert(torrent.metainfo.info_hash, TorrentAnnounceState::default());
+        let mut announce_states: HashMap<InfoHash, TorrentAnnounceState> = HashMap::new();
+        announce_states.insert(info_hash, TorrentAnnounceState::default());
         loop {
-            let state = match announce_states.get_mut(&torrent.metainfo.info_hash) {
+            let state = match announce_states.get_mut(&info_hash) {
                 Some(state) => state,
                 None => return Err(Error::InfoHashInvalid),
             };
@@ -193,12 +193,12 @@ impl Client {
                 };
                 match tracker_client.announce(&torrent, tracker_id).await {
                     Ok(announce) => {
-                        let mut new_peers: Vec<PeerInfo> = Vec::new();
-                        for peer_info in announce.peers.clone() {
+                        let mut new_peers: Vec<PeerAddrAndId> = Vec::new();
+                        for addr_and_id in announce.peers.clone() {
                             torrent.peer_bitfields.upsert(
-                                peer_info,
+                                addr_and_id,
                                 || {
-                                    new_peers.push(peer_info);
+                                    new_peers.push(addr_and_id);
                                     Bitfield::new(torrent.metainfo.info.piece_hashes.len())
                                 },
                                 |_| (),
@@ -210,13 +210,13 @@ impl Client {
 
                         // connect to and handshake with new peers
                         println!("[debug] new peers:");
-                        for peer_info in new_peers {
-                            println!("- {}", &peer_info);
+                        for addr_and_id in new_peers {
+                            println!("- {}", &addr_and_id);
                             task::spawn(
-                                self.clone().connect_and_run_event_loop(
-                                    peer_info,
-                                    torrent.metainfo.info_hash,
-                                ),
+                                self.clone().connect_and_run_event_loop(TorrentPeerInfo {
+                                    addr_and_id,
+                                    info_hash,
+                                }),
                             );
                         }
                         println!(" ");
@@ -233,12 +233,8 @@ impl Client {
         }
     }
 
-    pub async fn connect_and_run_event_loop(
-        self: Arc<Self>,
-        peer_info: PeerInfo,
-        info_hash: [u8; 20],
-    ) {
-        let torrent = match self.torrents.get(&info_hash) {
+    pub async fn connect_and_run_event_loop( self: Arc<Self>, peer: TorrentPeerInfo) {
+        let torrent = match self.torrents.get(&peer.info_hash) {
             Some(torrent) => torrent,
             None => {
                 if crate::DEBUG {
@@ -247,7 +243,7 @@ impl Client {
                 return;
             }
         };
-        let peer_bitfield = match torrent.peer_bitfields.get(&peer_info) {
+        let peer_bitfield = match torrent.peer_bitfields.get(&peer.addr_and_id) {
             Some(peer_bitfield) => peer_bitfield,
             None => {
                 if crate::DEBUG {
@@ -257,13 +253,13 @@ impl Client {
             },
         };
 
-        match PeerConn::connect(peer_info, info_hash).await {
+        match PeerConn::connect(peer).await {
             Ok(mut conn) => {
                 // handshake with peer
                 match conn.handshake(self.clone()).await {
                     Ok(_) => {
                         if crate::DEBUG {
-                            println!("[debug] connected to peer {}", &peer_info);
+                            println!("[debug] connected to peer {}", &peer.addr_and_id);
                         }
                         // torrent.active_peers.fetch_add(1, Ordering::SeqCst);
 
@@ -273,7 +269,7 @@ impl Client {
                             if crate::DEBUG {
                                 println!(
                                     "[debug] sending bitfield to peer {}: {:?}",
-                                    &peer_info, &bitfield
+                                    &peer.addr_and_id, &bitfield
                                 );
                             }
                             match conn.write(Message::Bitfield(bitfield)).await {
@@ -283,7 +279,7 @@ impl Client {
                                             if crate::DEBUG {
                                                 println!(
                                                     "[debug] disconnected from peer {}",
-                                                    &peer_info
+                                                    &peer.addr_and_id
                                                 );
                                             }
                                         }
@@ -291,7 +287,7 @@ impl Client {
                                             if crate::DEBUG {
                                                 println!(
                                                     "[debug] disconnected from peer {}: {:?}",
-                                                    &peer_info, e
+                                                    &peer.addr_and_id, e
                                                 );
                                             }
                                         }
@@ -300,7 +296,7 @@ impl Client {
                                 Err(e) => {
                                     println!(
                                         "[warning] unable to send our bitfield to peer {}: {}",
-                                        &peer_info, e
+                                        &peer.addr_and_id, e
                                     );
                                 }
                             }
@@ -312,19 +308,19 @@ impl Client {
                     Err(e) => {
                         println!(
                             "[warning] unable to handshake with peer {}: {}",
-                            &peer_info, e
+                            &peer.addr_and_id, e
                         );
                     }
                 }
             }
             Err(e) => {
                 if crate::DEBUG {
-                    println!("[debug] error connecting to peer {}: {}", &peer_info, e);
+                    println!("[debug] error connecting to peer {}: {}", &peer.addr_and_id, e);
                 }
             }
         }
 
         // remove peer bitfield when disconnected
-        torrent.peer_bitfields.remove(&peer_info);
+        torrent.peer_bitfields.remove(&peer.addr_and_id);
     }
 }

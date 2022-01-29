@@ -9,6 +9,7 @@ use std::convert::{TryFrom, TryInto};
 use std::fmt;
 use std::time::{Duration, UNIX_EPOCH};
 
+pub type InfoHash = [u8; 20];
 pub type PieceHash = [u8; 20];
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -65,7 +66,7 @@ impl Info {
 #[derive(Debug, Clone)]
 pub struct Metainfo {
     pub info: Info,
-    pub info_hash: [u8; 20],
+    pub info_hash: InfoHash,
     pub announce: Vec<Vec<String>>,
     pub creation_date: Option<DateTime<Utc>>,
     pub comment: Option<String>,
@@ -83,7 +84,7 @@ impl TryFrom<bencode::Dict> for Metainfo {
     type Error = Error;
     fn try_from(mut dict: bencode::Dict) -> Result<Self, Self::Error> {
         // parse info
-        let info_hash: [u8; 20];
+        let info_hash: InfoHash;
         let piece_length: usize;
         let piece_hashes: Vec<PieceHash>;
         let private: bool;

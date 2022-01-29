@@ -1,7 +1,8 @@
-use super::info::PeerInfo;
+use super::TorrentPeerInfo;
 use super::proto::{Handshake, Message};
 use crate::error::Error;
 use crate::client::Client;
+use crate::torrent::metainfo::InfoHash;
 
 use chrono::{DateTime, Utc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
@@ -71,8 +72,7 @@ impl Default for PeerConnState {
 pub struct PeerConn {
     pub opts: PeerConnOptions,
     pub state: PeerConnState,
-    info: PeerInfo,
-    info_hash: [u8; 20],
+    peer: TorrentPeerInfo,
     rx: BufReader<tokio::net::tcp::OwnedReadHalf>,
     tx: BufWriter<tokio::net::tcp::OwnedWriteHalf>,
     last_rx: Option<DateTime<Utc>>,
@@ -80,36 +80,35 @@ pub struct PeerConn {
 }
 
 impl PeerConn {
-    pub async fn connect(info: PeerInfo, info_hash: [u8; 20]) -> Result<Self, Error> {
-        Self::connect_with_opts(info, info_hash, PeerConnOptions::default()).await
+    pub async fn connect(peer: TorrentPeerInfo) -> Result<Self, Error> {
+        Self::connect_with_opts(peer, PeerConnOptions::default()).await
     }
 
-    pub async fn connect_with_opts(info: PeerInfo, info_hash: [u8; 20], opts: PeerConnOptions) -> Result<Self, Error> {
+    pub async fn connect_with_opts(peer: TorrentPeerInfo, opts: PeerConnOptions) -> Result<Self, Error> {
         let socket = match opts.addr.ip() {
             IpAddr::V4(_) => TcpSocket::new_v4()?,
             IpAddr::V6(_) => TcpSocket::new_v6()?,
         };
         socket.bind(opts.addr)?;
-        let future = socket.connect(info.addr);
+        let future = socket.connect(peer.addr_and_id.addr);
         let stream = if let Some(connect_timeout) = opts.connect_timeout {
             timeout(connect_timeout, future).await??
         } else {
             future.await?
         };
-        Ok(Self::new_with_opts(stream, info, info_hash, opts))
+        Ok(Self::new_with_opts(stream, peer, opts))
     }
 
-    pub fn new(stream: TcpStream, info: PeerInfo, info_hash: [u8; 20]) -> Self {
-        Self::new_with_opts(stream, info, info_hash, PeerConnOptions::default())
+    pub fn new(stream: TcpStream, peer: TorrentPeerInfo) -> Self {
+        Self::new_with_opts(stream, peer, PeerConnOptions::default())
     }
 
-    pub fn new_with_opts(stream: TcpStream, info: PeerInfo, info_hash: [u8; 20], opts: PeerConnOptions) -> Self {
+    pub fn new_with_opts(stream: TcpStream, peer: TorrentPeerInfo, opts: PeerConnOptions) -> Self {
         let (rx, tx) = stream.into_split();
         Self {
             opts,
             state: PeerConnState::default(),
-            info,
-            info_hash,
+            peer,
             rx: BufReader::with_capacity(opts.max_rx_len, rx),
             tx: BufWriter::new(tx),
             last_rx: None,
@@ -207,7 +206,7 @@ impl PeerConn {
     }
 
     pub async fn handshake(&mut self, client: Arc<Client>) -> Result<(), Error> {
-        let torrent = match client.torrents.get(&self.info_hash) {
+        let torrent = match client.torrents.get(&self.peer.info_hash) {
             Some(torrent) => torrent,
             None => return Err(Error::InfoHashInvalid),
         };
@@ -215,7 +214,7 @@ impl PeerConn {
         self.flush().await?;
         let handshake = self.read_handshake().await?;
         // check peer_id against known value, if known
-        if let Some(peer_id) = self.info.id {
+        if let Some(peer_id) = self.peer.addr_and_id.id {
             if handshake.peer_id != peer_id {
                 return Err(Error::PeerIdInvalid);
             }
@@ -234,11 +233,11 @@ impl PeerConn {
     // - Message::Port(_)
     // otherwise, returns Error::MessageHandled
     pub async fn read(&mut self, client: Arc<Client>) -> Result<Message, Error> {
-        let torrent = match client.torrents.get(&self.info_hash) {
+        let torrent = match client.torrents.get(&self.peer.info_hash) {
             Some(torrent) => torrent,
             None => return Err(Error::InfoHashInvalid),
         };
-        let peer_bitfield = match torrent.peer_bitfields.get(&self.info) {
+        let peer_bitfield = match torrent.peer_bitfields.get(&self.peer.addr_and_id) {
             Some(peer_bitfield) => peer_bitfield,
             None => return Err(Error::InfoHashInvalid),
         };
@@ -250,35 +249,35 @@ impl PeerConn {
             Message::Keepalive => Err(Error::MessageHandled),
             Message::Choke => {
                 if crate::DEBUG {
-                    println!("[debug] peer {} is choking", &self.info);
+                    println!("[debug] peer {} is choking", &self.peer.addr_and_id);
                 }
                 self.state.peer_choking = true;
                 Err(Error::MessageHandled)
             }
             Message::Unchoke => {
                 if crate::DEBUG {
-                    println!("[debug] peer {} no longer choking", &self.info);
+                    println!("[debug] peer {} no longer choking", &self.peer.addr_and_id);
                 }
                 self.state.peer_choking = false;
                 Err(Error::MessageHandled)
             }
             Message::Interested => {
                 if crate::DEBUG {
-                    println!("[debug] peer {} is interested", &self.info);
+                    println!("[debug] peer {} is interested", &self.peer.addr_and_id);
                 }
                 self.state.peer_interested = true;
                 Err(Error::MessageHandled)
             }
             Message::NotInterested => {
                 if crate::DEBUG {
-                    println!("[debug] peer {} is no longer interested", &self.info);
+                    println!("[debug] peer {} is no longer interested", &self.peer.addr_and_id);
                 }
                 self.state.peer_interested = false;
                 Err(Error::MessageHandled)
             }
             Message::Have(index) => {
                 if crate::DEBUG {
-                    println!("[debug] peer {} has piece {}", &self.info, index);
+                    println!("[debug] peer {} has piece {}", &self.peer.addr_and_id, index);
                 }
                 peer_bitfield.set_bit(index as usize);
                 torrent.pieces.increase_availability(&peer_bitfield).await?;
@@ -293,7 +292,7 @@ impl PeerConn {
                     return Err(Error::UnexpectedOrInvalidBitfield);
                 }
                 if crate::DEBUG {
-                    println!("[debug] peer {} sent {:?}", &self.info, &bitfield);
+                    println!("[debug] peer {} sent {:?}", &self.peer.addr_and_id, &bitfield);
                 }
                 torrent.pieces.increase_availability(&bitfield).await?;
                 peer_bitfield.try_overwrite_with(&bitfield)?;
@@ -302,7 +301,7 @@ impl PeerConn {
             Message::Piece(block) => {
                 torrent
                     .pieces
-                    .write_block(client.clone(), &self.info, &self.info_hash, block)
+                    .write_block(client.clone(), &self.peer, block)
                     .await?;
                 Err(Error::MessageHandled)
             }
@@ -310,7 +309,7 @@ impl PeerConn {
                 if crate::DEBUG {
                     println!(
                         "[debug] peer {} requested block of piece {} (offset {}, length {})",
-                        &self.info, request.index, request.begin, request.length
+                        &self.peer.addr_and_id, request.index, request.begin, request.length
                     );
                 }
                 if self.state.am_choking {
@@ -322,7 +321,7 @@ impl PeerConn {
             }
             Message::Cancel(request) => {
                 if crate::DEBUG {
-                    println!("[debug] peer {} cancelled request for block of piece {} (offset {}, length {})", &self.info, request.index, request.begin, request.length);
+                    println!("[debug] peer {} cancelled request for block of piece {} (offset {}, length {})", &self.peer.addr_and_id, request.index, request.begin, request.length);
                 }
                 if self.state.am_choking {
                     // TODO: ignore piece cancel request
@@ -392,18 +391,18 @@ impl PeerConn {
     }
 
     pub async fn run_event_loop(&mut self, client: Arc<Client>) -> Result<(), EventLoopError> {
-        let torrent = match client.torrents.get(&self.info_hash) {
+        let torrent = match client.torrents.get(&self.peer.info_hash) {
             Some(torrent) => torrent,
             None => return Err(EventLoopError::ConnectionError(Error::InfoHashInvalid)),
         };
-        let peer_bitfield = match torrent.peer_bitfields.get(&self.info) {
+        let peer_bitfield = match torrent.peer_bitfields.get(&self.peer.addr_and_id) {
             Some(peer_bitfield) => peer_bitfield,
             None => return Err(EventLoopError::ConnectionError(Error::InfoHashInvalid)),
         };
         // run event loop
         loop {
             if crate::DEBUG {
-                println!("[debug] polling for peer {} message...", &self.info);
+                println!("[debug] polling for peer {} message...", &self.peer.addr_and_id);
             }
             match self.read(client.clone()).await {
                 Ok(msg) => {
@@ -412,7 +411,7 @@ impl PeerConn {
                             if crate::DEBUG {
                                 println!(
                                     "[debug] peer {} sent DHT port: {:?}",
-                                    &self.info, dht_port
+                                    &self.peer.addr_and_id, dht_port
                                 );
                             }
                             // TODO: DHT related, insert peer into "local routing table"
@@ -421,7 +420,7 @@ impl PeerConn {
                             if crate::DEBUG {
                                 println!(
                                     "[debug] peer {} sent unhandled message: {:?}",
-                                    &self.info, msg
+                                    &self.peer.addr_and_id, msg
                                 );
                             }
                         }
@@ -435,14 +434,14 @@ impl PeerConn {
                 }) => {
                     println!(
                         "[warning] peer {} sent unsolicited block {} of piece {}",
-                        &self.info, block_index, piece_index
+                        &self.peer.addr_and_id, block_index, piece_index
                     );
                 }
                 Err(Error::InvalidPieceBlockMessage {
                     piece_index,
                     block_index,
                 }) => {
-                    println!("[warning] peer {} sent invalid block {} of piece {} (wrong begin or length)", &self.info, block_index, piece_index);
+                    println!("[warning] peer {} sent invalid block {} of piece {} (wrong begin or length)", &self.peer.addr_and_id, block_index, piece_index);
                 }
                 Err(Error::PieceHashInvalid { piece_index }) => {
                     println!(
@@ -465,7 +464,7 @@ impl PeerConn {
             if crate::DEBUG {
                 println!(
                     "[debug] updating peer {} interest: {:?}",
-                    &self.info, &msg_interest
+                    &self.peer.addr_and_id, &msg_interest
                 );
             }
             match self.write(msg_interest).await {

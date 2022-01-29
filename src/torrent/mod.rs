@@ -8,7 +8,7 @@ use piece::PieceStore;
 use crate::error::Error;
 use crate::http::{read_body, DualSchemeClient};
 use crate::peer::proto::Handshake;
-use crate::peer::PeerInfo;
+use crate::peer::PeerAddrAndId;
 use crate::skip_wrap_vec::SkipWrapVec;
 use crate::tracker::announce::Announce;
 use crate::bitfield::Bitfield;
@@ -40,7 +40,7 @@ pub struct Torrent {
     pub downloaded: AtomicUsize,
     pub status: TorrentStatus,
     pub paused: bool,
-    pub peer_bitfields: CHashMap<PeerInfo, Bitfield>,
+    pub peer_bitfields: CHashMap<PeerAddrAndId, Bitfield>,
     // pub active_peers: AtomicUsize,
     pub pieces: PieceStore,
     pub metainfo: Metainfo,
@@ -49,7 +49,7 @@ pub struct Torrent {
 }
 
 impl Torrent {
-    pub fn new(metainfo: Metainfo, local_peer: &PeerInfo, block_size: usize) -> Self {
+    pub fn new(metainfo: Metainfo, local_peer: &PeerAddrAndId, block_size: usize) -> Self {
         // prepare announce list
         let mut announce = metainfo.announce.clone();
         announce.shuffle(&mut rand::thread_rng());
@@ -86,7 +86,7 @@ impl Torrent {
     pub async fn from_file_or_url(
         path: &str,
         client: &DualSchemeClient,
-        local_peer: &PeerInfo,
+        local_peer: &PeerAddrAndId,
         block_size: usize,
     ) -> Result<Self, Error> {
         if &path[..7] == "http://" || &path[..8] == "https://" {
@@ -98,7 +98,7 @@ impl Torrent {
 
     pub async fn from_file(
         path: &str,
-        local_peer: &PeerInfo,
+        local_peer: &PeerAddrAndId,
         block_size: usize,
     ) -> Result<Self, Error> {
         let bytes = fs::read(path).await?;
@@ -109,7 +109,7 @@ impl Torrent {
     pub async fn from_url(
         path: &str,
         client: &DualSchemeClient,
-        local_peer: &PeerInfo,
+        local_peer: &PeerAddrAndId,
         block_size: usize,
     ) -> Result<Self, Error> {
         let metainfo_uri = path.parse::<hyper::Uri>()?;

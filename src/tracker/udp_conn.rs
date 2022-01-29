@@ -1,4 +1,5 @@
 use super::announce::{Announce, AnnounceRequest};
+use crate::torrent::metainfo::InfoHash;
 use crate::error::Error;
 
 use rand::Rng;
@@ -37,7 +38,7 @@ pub struct RequestAuth {
 pub enum RequestData {
     Connect,
     Announce(AnnounceRequest),
-    Scrape { info_hashes: Vec<[u8; 20]> },
+    Scrape { info_hashes: Vec<InfoHash> },
     Unknown,
 }
 

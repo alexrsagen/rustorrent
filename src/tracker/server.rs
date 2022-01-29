@@ -1,5 +1,6 @@
 use crate::error::Error;
-use crate::peer::{PeerInfo, PortRange};
+use crate::peer::{PeerAddrAndId, TorrentPeerKey, PortRange};
+use crate::torrent::metainfo::InfoHash;
 
 use super::announce::{Announce, AnnounceEvent, AnnounceKey, AnnounceRequest, AnnounceResponse};
 
@@ -33,16 +34,10 @@ impl Default for TrackerServerOptions {
     }
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Clone, Copy, Hash)]
-struct TrackerServerPeerKey {
-    peer_id: [u8; 20],
-    info_hash: [u8; 20],
-}
-
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct TrackerServerPeer {
-    info: PeerInfo,
-    info_hash: [u8; 20],
+    addr_and_id: PeerAddrAndId,
+    info_hash: InfoHash,
     user_agent: Option<String>,
     key: Option<AnnounceKey>,
     expire: DateTime<Utc>,
@@ -54,7 +49,7 @@ pub struct TrackerHttpServer {
     #[allow(unused)]
     opts: TrackerServerOptions,
     addr: SocketAddr,
-    peers: CHashMap<TrackerServerPeerKey, TrackerServerPeer>,
+    peers: CHashMap<TorrentPeerKey, TrackerServerPeer>,
 }
 
 impl TrackerHttpServer {
@@ -137,16 +132,16 @@ async fn handle(
     let now = Utc::now();
 
     // insert/update peer
-    let key = TrackerServerPeerKey {
+    let key = TorrentPeerKey {
         peer_id: announce_req.peer_id.unwrap(),
         info_hash: announce_req.info_hash.unwrap(),
     };
-    let info = PeerInfo::new(
-        announce_req.peer_id,
+    let addr_and_id = PeerAddrAndId::new(
         SocketAddr::new(announce_req.ip.unwrap(), announce_req.port.unwrap()),
+        announce_req.peer_id,
     );
     if crate::DEBUG {
-        println!("[debug] announce from peer {}", &info);
+        println!("[debug] announce from peer {}", &addr_and_id);
     }
     let user_agent = if crate::DEBUG {
         // only store user agent if debugging
@@ -165,7 +160,7 @@ async fn handle(
     server.peers.upsert(
         key,
         || TrackerServerPeer {
-            info,
+            addr_and_id,
             info_hash: announce_req.info_hash.unwrap(),
             user_agent: user_agent.clone(),
             key: announce_req.key.clone(),
@@ -175,7 +170,7 @@ async fn handle(
         |peer| {
             // only update peer if key matches
             if peer.key == announce_req.key {
-                peer.info = info;
+                peer.addr_and_id = addr_and_id;
                 peer.user_agent = user_agent.clone();
                 peer.expire = expire;
                 peer.seed = announce_req.left == Some(0);
@@ -188,14 +183,14 @@ async fn handle(
         .peers
         .retain(|_k, v| now < v.expire.add(Duration::seconds(60)));
 
-    let mut peers: Vec<PeerInfo> = Vec::with_capacity(server.peers.len());
+    let mut peers: Vec<PeerAddrAndId> = Vec::with_capacity(server.peers.len());
     let mut complete = 0;
     let mut incomplete = 0;
     for (k, v) in server.peers.clone() {
         if k == key {
             continue;
         }
-        peers.push(v.info);
+        peers.push(v.addr_and_id);
         if v.seed {
             complete += 1;
         } else {
