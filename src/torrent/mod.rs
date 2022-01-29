@@ -5,13 +5,13 @@ use metainfo::Metainfo;
 pub mod piece;
 use piece::PieceStore;
 
+use crate::bitfield::Bitfield;
 use crate::error::Error;
 use crate::http::{read_body, DualSchemeClient};
 use crate::peer::proto::Handshake;
 use crate::peer::PeerAddrAndId;
 use crate::skip_wrap_vec::SkipWrapVec;
 use crate::tracker::announce::Announce;
-use crate::bitfield::Bitfield;
 
 use chrono::{DateTime, Utc};
 use rand::seq::SliceRandom;

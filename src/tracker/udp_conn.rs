@@ -1,6 +1,6 @@
 use super::announce::{Announce, AnnounceRequest};
-use crate::torrent::metainfo::InfoHash;
 use crate::error::Error;
+use crate::torrent::metainfo::InfoHash;
 
 use rand::Rng;
 use tokio::net::UdpSocket;

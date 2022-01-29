@@ -1,7 +1,7 @@
 use super::PeerId;
 use crate::bitfield::Bitfield;
-use crate::torrent::metainfo::InfoHash;
 use crate::error::{Error, InvalidProto, PeerProto};
+use crate::torrent::metainfo::InfoHash;
 
 use std::convert::{From, TryFrom, TryInto};
 

@@ -1,4 +1,4 @@
-use super::{PortRange, PeerId};
+use super::{PeerId, PortRange};
 use crate::bencode;
 use crate::error::Error;
 

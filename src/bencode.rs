@@ -53,7 +53,7 @@ impl From<&[u8]> for Value {
                 nom::Err::Incomplete(needed) => Self::Invalid(Error::ParseIncomplete(needed)),
                 nom::Err::Error(e) => Self::Invalid(Error::ParseError(e.code)),
                 nom::Err::Failure(e) => Self::Invalid(Error::ParseError(e.code)),
-            }
+            },
         }
     }
 }

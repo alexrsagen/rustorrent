@@ -1,18 +1,17 @@
-use super::TorrentPeerInfo;
 use super::proto::{Handshake, Message};
-use crate::error::Error;
+use super::TorrentPeerInfo;
 use crate::client::Client;
-use crate::torrent::metainfo::InfoHash;
+use crate::error::Error;
 
 use chrono::{DateTime, Utc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::{TcpSocket, TcpStream};
 use tokio::time::timeout;
 
-use std::sync::Arc;
 use std::convert::TryInto;
 use std::default::Default;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Debug)]
@@ -84,7 +83,10 @@ impl PeerConn {
         Self::connect_with_opts(peer, PeerConnOptions::default()).await
     }
 
-    pub async fn connect_with_opts(peer: TorrentPeerInfo, opts: PeerConnOptions) -> Result<Self, Error> {
+    pub async fn connect_with_opts(
+        peer: TorrentPeerInfo,
+        opts: PeerConnOptions,
+    ) -> Result<Self, Error> {
         let socket = match opts.addr.ip() {
             IpAddr::V4(_) => TcpSocket::new_v4()?,
             IpAddr::V6(_) => TcpSocket::new_v6()?,
@@ -270,14 +272,20 @@ impl PeerConn {
             }
             Message::NotInterested => {
                 if crate::DEBUG {
-                    println!("[debug] peer {} is no longer interested", &self.peer.addr_and_id);
+                    println!(
+                        "[debug] peer {} is no longer interested",
+                        &self.peer.addr_and_id
+                    );
                 }
                 self.state.peer_interested = false;
                 Err(Error::MessageHandled)
             }
             Message::Have(index) => {
                 if crate::DEBUG {
-                    println!("[debug] peer {} has piece {}", &self.peer.addr_and_id, index);
+                    println!(
+                        "[debug] peer {} has piece {}",
+                        &self.peer.addr_and_id, index
+                    );
                 }
                 peer_bitfield.set_bit(index as usize);
                 torrent.pieces.increase_availability(&peer_bitfield).await?;
@@ -292,7 +300,10 @@ impl PeerConn {
                     return Err(Error::UnexpectedOrInvalidBitfield);
                 }
                 if crate::DEBUG {
-                    println!("[debug] peer {} sent {:?}", &self.peer.addr_and_id, &bitfield);
+                    println!(
+                        "[debug] peer {} sent {:?}",
+                        &self.peer.addr_and_id, &bitfield
+                    );
                 }
                 torrent.pieces.increase_availability(&bitfield).await?;
                 peer_bitfield.try_overwrite_with(&bitfield)?;
@@ -382,7 +393,8 @@ impl PeerConn {
     }
 
     pub async fn keepalive(&mut self) -> Result<(), Error> {
-        let keepalive_interval = self.opts.keepalive_interval - self.opts.tx_timeout.unwrap_or(Duration::from_secs(5));
+        let keepalive_interval =
+            self.opts.keepalive_interval - self.opts.tx_timeout.unwrap_or(Duration::from_secs(5));
         if self.duration_since_last_tx() > keepalive_interval {
             self.write(Message::Keepalive).await
         } else {
@@ -402,7 +414,10 @@ impl PeerConn {
         // run event loop
         loop {
             if crate::DEBUG {
-                println!("[debug] polling for peer {} message...", &self.peer.addr_and_id);
+                println!(
+                    "[debug] polling for peer {} message...",
+                    &self.peer.addr_and_id
+                );
             }
             match self.read(client.clone()).await {
                 Ok(msg) => {
@@ -498,7 +513,9 @@ impl PeerConn {
                 .map_err(|e| EventLoopError::WriteError(e))?;
 
             // flush all messages to peer
-            self.flush().await.map_err(|e| EventLoopError::WriteError(e))?;
+            self.flush()
+                .await
+                .map_err(|e| EventLoopError::WriteError(e))?;
 
             // TODO: find and cancel timed out requests
         }

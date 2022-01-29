@@ -1,4 +1,4 @@
-use super::metainfo::{InfoHash, PieceHash};
+use super::metainfo::PieceHash;
 use crate::bitfield::Bitfield;
 use crate::client::Client;
 use crate::error::Error;

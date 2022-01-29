@@ -1,25 +1,25 @@
+use crate::bitfield::Bitfield;
 use crate::error::Error;
 use crate::http::DualSchemeClient;
 use crate::peer::proto::Message;
-use crate::peer::{TorrentPeerInfo, PeerAddrAndId, PeerConn, PortRange};
-use crate::torrent::metainfo::{Files, Metainfo, InfoHash};
+use crate::peer::{PeerAddrAndId, PeerConn, PortRange, TorrentPeerInfo};
+use crate::resolver;
+use crate::torrent::metainfo::{Files, InfoHash, Metainfo};
 use crate::torrent::{Torrent, TorrentAnnounceState};
 use crate::tracker::{TrackerClient, TrackerClientOptions};
-use crate::bitfield::Bitfield;
-use crate::resolver;
 
 use chashmap::CHashMap;
 use chrono::Utc;
 use tokio::task;
 use tokio::time::sleep;
 
+use std::cmp::{max, min};
+use std::collections::HashMap;
 use std::default::Default;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use std::cmp::{max, min};
-use std::collections::HashMap;
 
 fn print_metainfo_files(metainfo: &Metainfo) {
     println!("[debug] torrent files:");
@@ -212,12 +212,10 @@ impl Client {
                         println!("[debug] new peers:");
                         for addr_and_id in new_peers {
                             println!("- {}", &addr_and_id);
-                            task::spawn(
-                                self.clone().connect_and_run_event_loop(TorrentPeerInfo {
-                                    addr_and_id,
-                                    info_hash,
-                                }),
-                            );
+                            task::spawn(self.clone().connect_and_run_event_loop(TorrentPeerInfo {
+                                addr_and_id,
+                                info_hash,
+                            }));
                         }
                         println!(" ");
                     }
@@ -233,7 +231,7 @@ impl Client {
         }
     }
 
-    pub async fn connect_and_run_event_loop( self: Arc<Self>, peer: TorrentPeerInfo) {
+    pub async fn connect_and_run_event_loop(self: Arc<Self>, peer: TorrentPeerInfo) {
         let torrent = match self.torrents.get(&peer.info_hash) {
             Some(torrent) => torrent,
             None => {
@@ -250,7 +248,7 @@ impl Client {
                     println!("[debug] torrent not found in client");
                 }
                 return;
-            },
+            }
         };
 
         match PeerConn::connect(peer).await {
@@ -315,7 +313,10 @@ impl Client {
             }
             Err(e) => {
                 if crate::DEBUG {
-                    println!("[debug] error connecting to peer {}: {}", &peer.addr_and_id, e);
+                    println!(
+                        "[debug] error connecting to peer {}: {}",
+                        &peer.addr_and_id, e
+                    );
                 }
             }
         }

@@ -1,5 +1,5 @@
 use crate::error::Error;
-use crate::peer::{PeerAddrAndId, TorrentPeerKey, PortRange};
+use crate::peer::{PeerAddrAndId, PortRange, TorrentPeerKey};
 use crate::torrent::metainfo::InfoHash;
 
 use super::announce::{Announce, AnnounceEvent, AnnounceKey, AnnounceRequest, AnnounceResponse};
