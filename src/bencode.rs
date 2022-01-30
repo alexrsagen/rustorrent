@@ -1,6 +1,11 @@
 use nom::{
-    alt, char, character::complete::digit1, delimited, do_parse, fold_many0, many0, map, map_res,
-    named, opt, pair, preceded, recognize, take, terminated,
+    IResult,
+    character::complete::{digit1, char},
+    branch::alt,
+    sequence::{delimited, pair, preceded, terminated},
+    multi::{many0, fold_many0},
+    combinator::{opt, map, map_res, recognize},
+    bytes::complete::take,
 };
 
 use std::collections::BTreeMap;
@@ -109,50 +114,50 @@ fn to_number<T: FromStr<Err = std::num::ParseIntError>>(input: &[u8]) -> std::io
     Ok(input_num)
 }
 
-// create parsers for all data types
-named!(
-    bint<i64>,
-    preceded!(
-        char!('i'),
-        terminated!(
-            map_res!(
-                recognize!(pair!(opt!(char!('-')), digit1)),
+fn bint(input: &[u8]) -> IResult<&[u8], i64> {
+    preceded(
+        char('i'),
+        terminated(
+            map_res(
+                recognize(pair(
+                    opt(char('-')),
+                    digit1
+                )),
                 to_number::<i64>
             ),
-            char!('e')
+            char('e')
         )
-    )
-);
-named!(
-    bbytes<Vec<u8>>,
-    do_parse!(
-        length: map_res!(terminated!(digit1, char!(':')), to_number::<usize>)
-            >> data: take!(length)
-            >> (data.to_vec())
-    )
-);
-named!(bstr<String>, map_res!(bbytes, String::from_utf8));
-named!(
-    blist<List>,
-    delimited!(char!('l'), many0!(bval), char!('e'))
-);
-named!(
-    bdict<Dict>,
-    delimited!(
-        char!('d'),
-        fold_many0!(pair!(bstr, bval), Dict::new(), |mut map: Dict, (k, v)| {
+    )(input)
+}
+
+fn bbytes(input: &[u8]) -> IResult<&[u8], Vec<u8>> {
+    let (input, length) = map_res(
+        terminated(digit1, char(':')),
+        to_number::<usize>
+    )(input)?;
+    map(take(length), Vec::from)(input)
+}
+
+fn blist(input: &[u8]) -> IResult<&[u8], List> {
+    delimited(char('l'), many0(bval), char('e'))(input)
+}
+
+fn bdict(input: &[u8]) -> IResult<&[u8], Dict> {
+    delimited(
+        char('d'),
+        fold_many0(pair(map_res(bbytes, String::from_utf8), bval), Dict::new, |mut map: Dict, (k, v)| {
             map.insert(k, v);
             map
         }),
-        char!('e')
-    )
-);
+        char('e'),
+    )(input)
+}
 
-// map parsers to enum
-named!(bintval<Value>, map!(bint, Value::Int));
-named!(bbytesval<Value>, map!(bbytes, Value::Bytes));
-named!(blistval<Value>, map!(blist, Value::List));
-named!(bdictval<Value>, map!(bdict, Value::Dict));
-
-// create a single parser for any data type
-named!(bval<Value>, alt!(bintval | bbytesval | blistval | bdictval));
+fn bval(input: &[u8]) -> IResult<&[u8], Value> {
+    alt((
+        map(bint, Value::Int),
+        map(bbytes, Value::Bytes),
+        map(blist, Value::List),
+        map(bdict, Value::Dict),
+    ))(input)
+}
