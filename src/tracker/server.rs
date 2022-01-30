@@ -181,7 +181,7 @@ async fn handle(
     // remove expired peers (expiry + 1 minute)
     server
         .peers
-        .retain(|_k, v| now < v.expire.add(Duration::seconds(60)));
+        .retain(|_k, v| now <= v.expire.add(Duration::seconds(60)));
 
     let mut peers: Vec<PeerAddrAndId> = Vec::with_capacity(server.peers.len());
     let mut complete = 0;
