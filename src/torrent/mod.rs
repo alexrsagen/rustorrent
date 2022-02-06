@@ -85,7 +85,7 @@ impl Torrent {
 
     pub async fn from_file_or_url(
         path: &str,
-        client: &DualSchemeClient,
+        client: DualSchemeClient,
         local_peer: &PeerAddrAndId,
         block_size: usize,
     ) -> Result<Self, Error> {
@@ -108,7 +108,7 @@ impl Torrent {
 
     pub async fn from_url(
         path: &str,
-        client: &DualSchemeClient,
+        client: DualSchemeClient,
         local_peer: &PeerAddrAndId,
         block_size: usize,
     ) -> Result<Self, Error> {

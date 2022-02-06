@@ -107,7 +107,7 @@ impl Client {
         let http_client = DualSchemeClient::new_with_resolver(resolver.into());
         let mut torrent = Torrent::from_file_or_url(
             torrent,
-            &http_client,
+            http_client,
             &self.local_peer,
             self.opts.block_size,
         )

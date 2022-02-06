@@ -999,6 +999,7 @@ dependencies = [
  "bytes",
  "chashmap",
  "chrono",
+ "crc32fast",
  "crossbeam-utils",
  "form_urlencoded",
  "futures-core",

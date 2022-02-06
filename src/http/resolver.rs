@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AsyncHyperResolver(TokioAsyncResolver);
 
 impl From<TokioAsyncResolver> for AsyncHyperResolver {

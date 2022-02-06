@@ -1,13 +1,99 @@
 use super::{PeerId, PortRange};
 use crate::bencode;
+use crate::http::public_ip::DualStackIpAddr;
 use crate::error::Error;
 
 use rand::Rng;
 
-use std::convert::{TryFrom, TryInto};
+use std::{convert::{TryFrom, TryInto}, net::{SocketAddrV4, SocketAddrV6}, cmp::Ordering};
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::ops::RangeInclusive;
+
+fn apply_mask(b: &mut [u8], mask: &[u8]) {
+    for (b_item, mask_item) in b.iter_mut().zip(mask.iter()) {
+        *b_item &= *mask_item;
+    }
+}
+
+fn peer_priority(remote_addr: SocketAddr, local_ip: DualStackIpAddr, local_port: u16) -> Option<u32> {
+    let local_addr = match remote_addr {
+        SocketAddr::V4(_) => match local_ip {
+            DualStackIpAddr::V4(ip) => SocketAddr::V4(SocketAddrV4::new(ip, local_port)),
+            DualStackIpAddr::V6(ip) => return None,
+            DualStackIpAddr::Both{v4, v6} => SocketAddr::V4(SocketAddrV4::new(v4, local_port)),
+        },
+        SocketAddr::V6(remote_addr_v6) => match local_ip {
+            DualStackIpAddr::V4(ip) => return None,
+            DualStackIpAddr::V6(ip) => SocketAddr::V6(SocketAddrV6::new(ip, local_port, remote_addr_v6.flowinfo(), remote_addr_v6.scope_id())),
+            DualStackIpAddr::Both{v4, v6} => SocketAddr::V6(SocketAddrV6::new(v6, local_port, remote_addr_v6.flowinfo(), remote_addr_v6.scope_id())),
+        },
+    };
+
+    if remote_addr.ip() == local_addr.ip() {
+        let (e1, e2) = if remote_addr.port() > local_addr.port() {
+            (&local_addr, &remote_addr)
+        } else {
+            (&remote_addr, &local_addr)
+        };
+        let mut buf = Vec::with_capacity(4);
+        buf.extend_from_slice(&e1.port().to_be_bytes());
+        buf.extend_from_slice(&e2.port().to_be_bytes());
+        Some(crc32fast::hash(&buf))
+    } else if let (SocketAddr::V6(remote_addr), SocketAddr::V6(local_addr)) = &(remote_addr, local_addr) {
+        const V6_MASK: [[u8; 8]; 3] = [
+            [ 0xff, 0xff, 0xff, 0xff, 0x55, 0x55, 0x55, 0x55 ],
+            [ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x55, 0x55 ],
+            [ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff ],
+        ];
+        let (e1, e2) = if remote_addr > local_addr {
+            (local_addr, remote_addr)
+        } else {
+            (remote_addr, local_addr)
+        };
+        let (mut b1, mut b2) = (e1.ip().octets(), e2.ip().octets());
+        let mask = if b1[0..4].cmp(&b2[0..4]) == Ordering::Greater  {
+            &V6_MASK[0]
+        } else if b1[0..6].cmp(&b2[0..6]) == Ordering::Greater {
+            &V6_MASK[1]
+        } else {
+            &V6_MASK[2]
+        };
+        apply_mask(&mut b1, mask);
+        apply_mask(&mut b2, mask);
+        let mut buf = Vec::with_capacity(32);
+        buf.extend_from_slice(&b1);
+        buf.extend_from_slice(&b2);
+        Some(crc32fast::hash(&buf))
+    } else if let (SocketAddr::V4(remote_addr), SocketAddr::V4(local_addr)) = &(remote_addr, local_addr) {
+        const V4_MASK: [[u8; 4]; 3] = [
+            [ 0xff, 0xff, 0x55, 0x55 ],
+            [ 0xff, 0xff, 0xff, 0x55 ],
+            [ 0xff, 0xff, 0xff, 0xff ],
+        ];
+        let (e1, e2) = if remote_addr > local_addr {
+            (local_addr, remote_addr)
+        } else {
+            (remote_addr, local_addr)
+        };
+        let (mut b1, mut b2) = (e1.ip().octets(), e2.ip().octets());
+        let mask = if b1[0..2].cmp(&b2[0..2]) == Ordering::Greater  {
+            &V4_MASK[0]
+        } else if b1[0..3].cmp(&b2[0..3]) == Ordering::Greater {
+            &V4_MASK[1]
+        } else {
+            &V4_MASK[2]
+        };
+        apply_mask(&mut b1, mask);
+        apply_mask(&mut b2, mask);
+        let mut buf = Vec::with_capacity(8);
+        buf.extend_from_slice(&b1);
+        buf.extend_from_slice(&b2);
+        Some(crc32fast::hash(&buf))
+    } else {
+        None
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub struct PeerAddrAndId {
@@ -55,6 +141,10 @@ impl PeerAddrAndId {
         };
         bytes.extend_from_slice(&self.addr.port().to_be_bytes()[..]);
         bytes
+    }
+
+    pub fn rank(&self, local_ip: DualStackIpAddr, local_port: u16) -> Option<u32> {
+        peer_priority(self.addr, local_ip, local_port)
     }
 }
 

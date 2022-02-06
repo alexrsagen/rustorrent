@@ -1,7 +1,7 @@
+pub mod query_string;
+pub mod public_ip;
 pub mod resolver;
 use resolver::AsyncHyperResolver;
-
-pub mod query_string;
 
 use crate::error::{Error, HttpProto, InvalidProto};
 
@@ -15,30 +15,8 @@ use hyper::{Body, Request, Response, Uri};
 use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
 
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::pin::Pin;
 use std::task::{Context, Poll};
-
-const EXTERNAL_IP_ENDPOINTS: [&str; 4] = [
-    "https://ip.kitcloud.no",
-    "https://icanhazip.com",
-    "https://api64.ipify.org",
-    "https://ident.me",
-];
-
-const EXTERNAL_IPV4_ENDPOINTS: [&str; 4] = [
-    "https://ipv4.kitcloud.no/raw",
-    "https://ipv4.icanhazip.com",
-    "https://api.ipify.org",
-    "http://ipv4.ident.me",
-];
-
-const EXTERNAL_IPV6_ENDPOINTS: [&str; 4] = [
-    "https://ipv6.kitcloud.no/raw",
-    "https://ipv6.icanhazip.com",
-    "https://api6.ipify.org",
-    "http://ipv6.ident.me",
-];
 
 struct IoStream<'a>(&'a mut hyper::Body);
 
@@ -72,6 +50,7 @@ fn tls_client(
     Client::builder().build(connector)
 }
 
+#[derive(Clone)]
 pub struct DualSchemeClient {
     client: Client<HttpConnector<AsyncHyperResolver>>,
     tls_client: Client<HttpsConnector<HttpConnector<AsyncHyperResolver>>>,
@@ -95,66 +74,6 @@ impl DualSchemeClient {
             },
             None => Err(Error::ProtoInvalid(InvalidProto::Http(HttpProto::Unknown))),
         }
-    }
-
-    pub async fn get_external_ip(&self) -> Result<IpAddr, Error> {
-        let mut last_error: Option<Error> = None;
-        for endpoint in &EXTERNAL_IP_ENDPOINTS {
-            match self.get_string(&Uri::from_static(endpoint)).await {
-                Ok(bodystr) => match bodystr.parse::<IpAddr>() {
-                    Ok(ip) => return Ok(ip),
-                    Err(e) => {
-                        last_error = Some(e.into());
-                        continue;
-                    }
-                },
-                Err(e) => last_error = Some(e),
-            }
-        }
-        Err(Error::PublicIpLookupFailed(match last_error {
-            Some(e) => format!("no endpoints available (last error: {})", e),
-            None => String::from("no endpoints available"),
-        }))
-    }
-
-    pub async fn get_external_ipv4(&self) -> Result<Ipv4Addr, Error> {
-        let mut last_error: Option<Error> = None;
-        for endpoint in &EXTERNAL_IPV4_ENDPOINTS {
-            match self.get_string(&Uri::from_static(endpoint)).await {
-                Ok(bodystr) => match bodystr.parse::<Ipv4Addr>() {
-                    Ok(ip) => return Ok(ip),
-                    Err(e) => {
-                        last_error = Some(e.into());
-                        continue;
-                    }
-                },
-                Err(e) => last_error = Some(e),
-            }
-        }
-        Err(Error::PublicIpLookupFailed(match last_error {
-            Some(e) => format!("no endpoints available (last error: {})", e),
-            None => String::from("no endpoints available"),
-        }))
-    }
-
-    pub async fn get_external_ipv6(&self) -> Result<Ipv6Addr, Error> {
-        let mut last_error: Option<Error> = None;
-        for endpoint in &EXTERNAL_IPV6_ENDPOINTS {
-            match self.get_string(&Uri::from_static(endpoint)).await {
-                Ok(bodystr) => match bodystr.parse::<Ipv6Addr>() {
-                    Ok(ip) => return Ok(ip),
-                    Err(e) => {
-                        last_error = Some(e.into());
-                        continue;
-                    }
-                },
-                Err(e) => last_error = Some(e),
-            }
-        }
-        Err(Error::PublicIpLookupFailed(match last_error {
-            Some(e) => format!("no endpoints available (last error: {})", e),
-            None => String::from("no endpoints available"),
-        }))
     }
 
     pub async fn get(&self, uri: &Uri) -> Result<Response<Body>, Error> {
