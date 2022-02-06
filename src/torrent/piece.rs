@@ -14,15 +14,15 @@ use sha1::{Digest, Sha1};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-pub fn get_block_count(piece_size: usize, block_size: usize) -> usize {
+fn get_block_count(piece_size: usize, block_size: usize) -> usize {
     (block_size as f64 / piece_size as f64).ceil() as usize
 }
 
-pub fn get_block_begin(block_size: usize, block_index: usize) -> usize {
+fn get_block_begin(block_size: usize, block_index: usize) -> usize {
     block_index * block_size
 }
 
-pub fn get_block_size(
+fn get_block_size(
     piece_size: usize,
     block_size: usize,
     block_count: usize,
@@ -40,7 +40,7 @@ pub fn get_block_size(
     Ok(block_size)
 }
 
-pub fn get_block_index(
+fn get_block_index(
     piece_size: usize,
     block_size: usize,
     block_count: usize,
@@ -112,11 +112,9 @@ pub enum PieceState {
     Complete,
 }
 
-pub type Pieces = Vec<Arc<Piece>>;
-
 pub struct PieceStore {
     block_size: usize,
-    pieces: Pieces,
+    pieces: Vec<Arc<Piece>>,
     pieces_by_priority: RwLock<Vec<Vec<usize>>>,
     pick_mode: AtomicCell<PickMode>,
 }

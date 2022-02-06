@@ -25,8 +25,8 @@ use std::sync::atomic::AtomicUsize;
 pub enum TorrentStatus {
     Queued,
     Checking,
-    Leeching,
-    Seeding,
+    Downloading, // leeching
+    Uploading, // seeding
     Finished,
 }
 
@@ -77,8 +77,8 @@ impl Torrent {
 
     pub fn is_active(&self) -> bool {
         match self.status {
-            TorrentStatus::Leeching => !self.paused,
-            TorrentStatus::Seeding => !self.paused,
+            TorrentStatus::Downloading => !self.paused,
+            TorrentStatus::Uploading => !self.paused,
             _ => false,
         }
     }
